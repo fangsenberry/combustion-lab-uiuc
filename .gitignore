@@ -159,4 +159,8 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+#its going to be too much. maybe look into git large storage
 data/
+
+#just for local testing, dont want to commit
+test.ipynb
