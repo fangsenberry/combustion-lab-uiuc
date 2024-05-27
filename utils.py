@@ -3,10 +3,18 @@ from PIL import Image
 import os
 from tqdm.auto import tqdm
 import time
+import cv2
+import numpy as np
 
-import matplotlib.pyplot as plt
-from PIL import Image
+'''
+Just for the Jupyter stuff
+'''
+from IPython.display import display, clear_output
 
+'''
+Only shows the first three by default, but can be changed by setting trunc=False and top_k to the desired number of frames.
+Also the clearing of the plot is done for usage in Jupyter.
+'''
 def show_image(image_path, trunc: bool = True, top_k: int = 3):
     # Load the .tif file
     image = Image.open(image_path)
@@ -23,6 +31,9 @@ def show_image(image_path, trunc: bool = True, top_k: int = 3):
             plt.axis('off')  # Hide the axis
             plt.title(f'Fuel Droplets in Combustion Chamber - Frame {i+1}')
             plt.show()
+            display(plt.gcf())  # Display the current figure
+            time.sleep(0.75)  # Pause for a second
+            clear_output(wait=True)  # Clear the output for the next frame
             i += 1
     except EOFError:
         pass  # End of file reached
@@ -38,50 +49,18 @@ def get_total_frames(image_path):
         pass  # End of file reached
     return total_frames
 
-def process_images(input_path, output_dir, output_filename, start_x=None, end_x=None, start_y=None, end_y=None, trunc=False, top_k=3, save_cropped=False, show_image: bool = True):
-    start_time = time.time()
-    # Load the .tif file
-    image = Image.open(input_path)
-    print(f"Image Dim: {image.width} x {image.height}")
-    
-    total_frames = get_total_frames(input_path)
-    print(f"Total Frames: {total_frames}, time taken: {time.time() - start_time:.2f}s")
+# import numpy as np
+# from PIL import Image
 
-    # Set default cropping coordinates if not provided
-    if start_x is None: start_x = 0
-    if start_y is None: start_y = 0
-    if end_x is None: end_x = image.width
-    if end_y is None: end_y = image.height
+def convert_tif_to_npy(tif_path, npy_path):
+    image = Image.open(tif_path)
+    frames = []
+    try:
+        for i in tqdm(range(get_total_frames(tif_path))):
+            frame = np.array(image) / 255.0  # Normalize to [0, 1]
+            frames.append(frame)
+            image.seek(image.tell() + 1)
+    except EOFError:
+        pass  # End of file reached
 
-    cropped_frames = []
-
-    # Check if the image has multiple frames
-    for i in tqdm(range(total_frames)):
-        if trunc and i >= top_k: break
-        image.seek(i)
-        # Crop the image
-        cropped_image = image.crop((start_x, start_y, end_x, end_y))
-        cropped_frames.append(cropped_image)
-
-        if show_image:
-            # Display the cropped image
-            plt.figure(figsize=(15, 15))
-            plt.imshow(cropped_image)
-            plt.axis('off')  # Hide the axis
-            plt.title(f'Fuel Droplets in Combustion Chamber - Frame {i+1}')
-            plt.show()
-            plt.close()  # Close the plot to clear the output
-
-    print(f"Number of frames processed: {len(cropped_frames)}, time taken: {time.time() - start_time:.2f}s")
-
-    # Save the cropped images if required
-    if save_cropped:
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        output_path = os.path.join(output_dir, output_filename)
-        cropped_frames[0].save(output_path, save_all=True, append_images=cropped_frames[1:])
-        print(f"Cropped images saved to {output_path}")
-
-    print(f"Total time taken: {time.time() - start_time:.2f}s")
-
-
+    np.save(npy_path, np.array(frames))

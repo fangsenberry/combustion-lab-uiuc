@@ -1,0 +1,3 @@
+[submodule "Seq2S_spray_denoising-pytorch"]
+	path = Seq2S_spray_denoising-pytorch
+	url = https://github.com/jihunoh2/Seq2S_spray_denoising-pytorch
