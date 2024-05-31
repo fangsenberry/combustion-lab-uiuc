@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
 
 def manual_crop(image, start_x=0, end_x=None, start_y=0, end_y=None):
     # Get image dimensions
@@ -166,9 +167,6 @@ def process_and_crop_image_canny_with_morph(image_path, output_dir, canny_thresh
     
     return cropped_images
 
-import os
-import cv2
-import matplotlib.pyplot as plt
 
 def upscale_image_bicubic(image, scale_factor=2):
     height, width = image.shape[:2]
@@ -194,9 +192,6 @@ def apply_morphological_operations(edges):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
     return closed
-
-def manual_crop(image, start_y, end_y):
-    return image[start_y:end_y, :]
 
 def process_and_crop_image_canny_new(image_path, output_dir, canny_threshold1=50, canny_threshold2=100, margin=5):
     # Create the output directory if it doesn't exist
@@ -272,3 +267,104 @@ def process_and_crop_image_canny_new(image_path, output_dir, canny_threshold1=50
     plt.show()
     
     return cropped_images
+
+def pad_with_mean(roi, target_length):
+    mean_value = np.mean(roi)
+    padded_roi = np.pad(roi, (0, target_length - len(roi)), 'constant', constant_values=(mean_value,))
+    return padded_roi
+
+# Ensure all ROIs are the same length by padding them with their mean value
+
+def lig_segment(image_path, canny_threshold1=20, canny_threshold2=100, min_area=10, max_area=1000, k=2, plot_kmeans=None):
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise ValueError(f"Image at path {image_path} could not be loaded.")
+
+    # Manually crop the image (example coordinates)
+    manually_cropped_image = manual_crop(image, start_x=300, end_x=600, start_y=5, end_y=270)
+    roi_data = []
+    valid_contours = []
+    edges = apply_canny_edge_detection(manually_cropped_image, canny_threshold1, canny_threshold2)
+
+    small_rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    small_ellipse_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+    small_cross_kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (2, 2))
+    # Create a mask by dilating the edges with a smaller kernel and fewer iterations
+    dilated_edges = cv2.dilate(edges, small_rect_kernel, iterations=1)
+
+    # Apply morphological closing with a smaller kernel to minimally fill the edges
+    filled_edges = cv2.morphologyEx(dilated_edges, cv2.MORPH_CLOSE, small_rect_kernel, iterations=1)
+
+    binary_image = cv2.bitwise_not(filled_edges)
+    contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    for i, contour in enumerate(contours):
+
+        area = cv2.contourArea(contour)
+        if area < min_area:
+            cv2.drawContours(binary_image, [contour], -1, 0, thickness=cv2.FILLED)
+            continue
+
+        # Create a mask for the current contour
+        mask = np.zeros(manually_cropped_image.shape, dtype=np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
+        
+        # Extract the ROI using the mask
+        roi = cv2.bitwise_and(manually_cropped_image, manually_cropped_image, mask=mask)
+        
+        # Get the pixel values of the ROI
+        roi_values = roi[mask == 255]
+        image_with_contour = cv2.cvtColor(manually_cropped_image, cv2.COLOR_GRAY2BGR)
+        cv2.drawContours(image_with_contour, [contour], -1, (0, 255, 0), 2)
+
+        if max_area is None or area < max_area:
+            roi_data.append(roi_values.tolist())
+            valid_contours.append(contour)
+ 
+     # Flatten the ROI data
+    max_length = max(len(roi) for roi in roi_data)
+    roi_data_padded = [pad_with_mean(roi, max_length) for roi in roi_data]
+
+    # Perform K-Means clustering
+    kmeans = KMeans(n_clusters=k, random_state=0)
+    clusters = kmeans.fit_predict(roi_data_padded)
+    cluster_means = []
+    for cluster_id in range(k):
+        cluster_pixels = [roi_data_padded[i] for i in range(len(clusters)) if clusters[i] == cluster_id]
+        cluster_mean = np.mean([pixel for roi in cluster_pixels for pixel in roi])
+        cluster_means.append(cluster_mean)
+
+    # Identify the cluster with the lowest mean pixel value
+    min_cluster_id = np.argmin(cluster_means)
+
+    # Define a color palette for clusters
+    colors = plt.cm.get_cmap('tab10', k)  # Use a colormap with k distinct colors
+
+    original_image_bgr = cv2.cvtColor(manually_cropped_image, cv2.COLOR_GRAY2BGR)
+    highlighted_images = [original_image_bgr.copy() for _ in range(k)]
+
+    # Highlight the ROIs based on their cluster assignment
+    for i, contour in enumerate(valid_contours):
+        cluster_id = clusters[i]
+        color = tuple(int(c * 255) for c in colors(cluster_id)[:3])
+        if cluster_id == min_cluster_id:
+            cv2.drawContours(binary_image, [contour], -1, 0, thickness=cv2.FILLED)  # Fill with black
+        cv2.drawContours(highlighted_images[cluster_id], [contour], -1, color, 2)
+
+
+    # Display the original image with highlighted ROIs for each cluster
+    if plot_kmeans:
+        plt.figure(figsize=(18, 6))
+        for cluster_id in range(k):
+            plt.subplot(1, k, cluster_id + 1)
+            plt.title(f'ROIs of Cluster {cluster_id} Highlighted')
+            plt.imshow(highlighted_images[cluster_id])
+            plt.axis('off')
+        plt.tight_layout()
+        plt.show()
+
+    binary_image = cv2.bitwise_not(binary_image)
+    contours, _= cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(original_image_bgr, contours, -1, (0, 255, 0), 2)
+    
+    return manually_cropped_image, binary_image, original_image_bgr
