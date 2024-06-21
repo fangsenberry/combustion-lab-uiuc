@@ -11,12 +11,14 @@ from skimage import io
 from skimage.util import random_noise
 from tqdm import tqdm
 
-image_dir = 'data/noisy_images_preprocessed'
+image_dir = 'data/noisy_images_preprocessed/A01_C_DP_35.0'
 output_dir = 'data/denoised_images'
 
 # Check if GPU is available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if device == "cuda": torch.cuda.empty_cache()
 print(f"Using device: {device}")
+print(f"Number of GPUs: {torch.cuda.device_count()}")
 
 def print_model_info(model):
     # Calculate number of parameters
@@ -70,7 +72,7 @@ train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_worker
 test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
 
 class SimpleDnCNN(nn.Module):
-    def __init__(self, channels=1, num_of_layers=5, features=128, dropout_rate=0.25):
+    def __init__(self, channels=1, num_of_layers=3, features=512, dropout_rate=0.0):
         super(SimpleDnCNN, self).__init__()
         kernel_size = 3
         padding = 1
@@ -81,24 +83,27 @@ class SimpleDnCNN(nn.Module):
             layers.append(nn.Conv2d(in_channels=features, out_channels=features, kernel_size=kernel_size, padding=padding, bias=False))
             layers.append(nn.BatchNorm2d(features))
             layers.append(nn.ReLU(inplace=True))
-            layers.append(nn.Dropout(p=dropout_rate))  # Adding dropout after each ReLU
+            # layers.append(nn.Dropout(p=dropout_rate))  # Adding dropout after each ReLU
         layers.append(nn.Conv2d(in_channels=features, out_channels=channels, kernel_size=kernel_size, padding=padding, bias=False))
         self.dncnn = nn.Sequential(*layers)
 
         # Residual connection
-        self.residual = nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=1, padding=0, bias=False)
+        # self.residual = nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=1, padding=0, bias=False)
 
     def forward(self, x):
-        out = self.dncnn(x)
-        return out + self.residual(x)  # Adding the residual connection
+        # out = self.dncnn(x)
+        # return out + self.residual(x)  # Adding the residual connection
+        return self.dncnn(x)
 
 model = SimpleDnCNN().to(device)
+model = nn.DataParallel(model)
 print_model_info(model)
 
 def train(model, train_loader, criterion, optimizer, scheduler, epoch):
     model.train()
     running_loss = 0.0
     for batch_idx, (noisy_images, images) in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch}")):
+        print(f"Batch {batch_idx + 1}/{len(train_loader)}")  # Debugging line
         noisy_images = noisy_images.to(device, dtype=torch.float32)
         images = images.to(device, dtype=torch.float32)
 
@@ -109,6 +114,7 @@ def train(model, train_loader, criterion, optimizer, scheduler, epoch):
         optimizer.step()
 
         running_loss += loss.item()
+        print(f"Batch {batch_idx + 1} loss: {loss.item()}")  # Debugging line
 
     print(f"Epoch {epoch} Training Loss: {running_loss / len(train_loader)}")
     return running_loss / len(train_loader)
@@ -118,6 +124,7 @@ def test(model, test_loader, criterion, epoch):
     test_loss = 0.0
     with torch.no_grad():
         for batch_idx, (noisy_images, images) in enumerate(tqdm(test_loader, desc=f"Testing Epoch {epoch}")):
+            print(f"Batch {batch_idx + 1}/{len(test_loader)}")  # Debugging line
             noisy_images = noisy_images.to(device, dtype=torch.float32)
             images = images.to(device, dtype=torch.float32)
 
@@ -125,6 +132,7 @@ def test(model, test_loader, criterion, epoch):
             loss = criterion(outputs, images)
 
             test_loss += loss.item()
+            print(f"Batch {batch_idx + 1} loss: {loss.item()}")  # Debugging line
 
     print(f"Epoch {epoch} Testing Loss: {test_loss / len(test_loader)}")
     return test_loss / len(test_loader)
