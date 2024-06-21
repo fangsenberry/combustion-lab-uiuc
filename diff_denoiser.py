@@ -96,7 +96,7 @@ class SimpleDnCNN(nn.Module):
         return self.dncnn(x)
 
 model = SimpleDnCNN().to(device)
-model = nn.DataParallel(model)
+# model = nn.DataParallel(model)
 print_model_info(model)
 
 def train(model, train_loader, criterion, optimizer, scheduler, epoch):
