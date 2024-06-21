@@ -11,8 +11,11 @@ from skimage import io
 from skimage.util import random_noise
 from tqdm import tqdm
 
+image_dir = 'data/noisy_images_preprocessed'
+output_dir = 'data/denoised_images'
+
 # Check if GPU is available
-device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 class NoisyImageDataset(Dataset):
@@ -45,13 +48,13 @@ class NoisyImageDataset(Dataset):
 
 transform = transforms.Compose([transforms.ToTensor()])
 
-dataset = NoisyImageDataset(image_dir='noisy_images_preprocessed', transform=transform)
+dataset = NoisyImageDataset(image_dir=image_dir, transform=transform)
 train_size = int(0.8 * len(dataset))
 test_size = len(dataset) - train_size
 train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
 
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4)
+test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
 
 # class DnCNN(nn.Module):
 #     def __init__(self, channels=1, num_of_layers=17, dropout_rate=0.25):
@@ -157,8 +160,6 @@ def denoise_image(model, image_path):
     denoised_image = denoised_image_tensor.permute(1, 2, 0).numpy()
     return noisy_image, denoised_image
 
-image_dir = 'noisy_images_preprocessed'
-output_dir = 'denoised_images'
 os.makedirs(output_dir, exist_ok=True)
 
 model.load_state_dict(torch.load('dncnn.pth'))
