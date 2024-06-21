@@ -93,6 +93,7 @@ class SimpleDnCNN(nn.Module):
         return out + self.residual(x)  # Adding the residual connection
 
 model = SimpleDnCNN().to(device)
+print_model_info(model)
 
 def train(model, train_loader, criterion, optimizer, scheduler, epoch):
     model.train()
