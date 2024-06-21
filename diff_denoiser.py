@@ -18,6 +18,19 @@ output_dir = 'data/denoised_images'
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
+def print_model_info(model):
+    # Calculate number of parameters
+    num_params = sum(p.numel() for p in model.parameters())
+    
+    # Calculate model size in bytes
+    model_size = sum(p.element_size() * p.numel() for p in model.parameters())
+    
+    # Convert model size to megabytes (MB)
+    model_size_MB = model_size / (1024 * 1024)
+    
+    print(f"Number of parameters: {num_params}")
+    print(f"Model size: {model_size_MB:.2f} MB")
+
 class NoisyImageDataset(Dataset):
     def __init__(self, image_dir, transform=None):
         self.image_dir = image_dir
