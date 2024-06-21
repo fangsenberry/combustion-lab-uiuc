@@ -56,26 +56,6 @@ train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size
 train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4)
 test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
 
-# class DnCNN(nn.Module):
-#     def __init__(self, channels=1, num_of_layers=17, dropout_rate=0.25):
-#         super(DnCNN, self).__init__()
-#         kernel_size = 3
-#         padding = 1
-#         features = 64
-#         layers = []
-#         layers.append(nn.Conv2d(in_channels=channels, out_channels=features, kernel_size=kernel_size, padding=padding, bias=False))
-#         layers.append(nn.ReLU(inplace=True))
-#         for _ in range(num_of_layers-2):
-#             layers.append(nn.Conv2d(in_channels=features, out_channels=features, kernel_size=kernel_size, padding=padding, bias=False))
-#             layers.append(nn.BatchNorm2d(features))
-#             layers.append(nn.ReLU(inplace=True))
-#             layers.append(nn.Dropout(p=dropout_rate))  # Adding dropout after each ReLU
-#         layers.append(nn.Conv2d(in_channels=features, out_channels=1, kernel_size=kernel_size, padding=padding, bias=False))
-#         self.dncnn = nn.Sequential(*layers)
-
-#     def forward(self, x):
-#         return self.dncnn(x)
-
 class SimpleDnCNN(nn.Module):
     def __init__(self, channels=1, num_of_layers=5, features=128, dropout_rate=0.25):
         super(SimpleDnCNN, self).__init__()
@@ -101,7 +81,7 @@ class SimpleDnCNN(nn.Module):
 
 model = SimpleDnCNN().to(device)
 
-def train(model, train_loader, criterion, optimizer, epoch):
+def train(model, train_loader, criterion, optimizer, scheduler, epoch):
     model.train()
     running_loss = 0.0
     for batch_idx, (noisy_images, images) in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch}")):
@@ -117,6 +97,7 @@ def train(model, train_loader, criterion, optimizer, epoch):
         running_loss += loss.item()
 
     print(f"Epoch {epoch} Training Loss: {running_loss / len(train_loader)}")
+    return running_loss / len(train_loader)
 
 def test(model, test_loader, criterion, epoch):
     model.eval()
@@ -132,17 +113,45 @@ def test(model, test_loader, criterion, epoch):
             test_loss += loss.item()
 
     print(f"Epoch {epoch} Testing Loss: {test_loss / len(test_loader)}")
+    return test_loss / len(test_loader)
 
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
 num_epochs = 25
 
-for epoch in range(1, num_epochs + 1):
-    train(model, train_loader, criterion, optimizer, epoch)
-    test(model, test_loader, criterion, epoch)
+train_losses = []
+test_losses = []
+best_test_loss = float('inf')
+best_model_path = 'dncnn_best.pth'
 
-# Save the model
-torch.save(model.state_dict(), 'dncnn.pth')
+for epoch in range(1, num_epochs + 1):
+    print(f"Learning rate at epoch {epoch}: {optimizer.param_groups[0]['lr']}")
+    train_loss = train(model, train_loader, criterion, optimizer, scheduler, epoch)
+    test_loss = test(model, test_loader, criterion, epoch)
+    
+    train_losses.append(train_loss)
+    test_losses.append(test_loss)
+
+    scheduler.step(test_loss)
+
+    # Save the best model
+    if test_loss < best_test_loss:
+        best_test_loss = test_loss
+        torch.save(model.state_dict(), best_model_path)
+
+# Plotting train and test losses
+plt.figure()
+plt.plot(range(1, num_epochs + 1), train_losses, label='Train Loss')
+plt.plot(range(1, num_epochs + 1), test_losses, label='Test Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+plt.savefig('loss_plot.png')
+plt.show()
+
+# Load the best model
+model.load_state_dict(torch.load(best_model_path))
 
 def denoise_image(model, image_path):
     model.eval()
@@ -161,8 +170,6 @@ def denoise_image(model, image_path):
     return noisy_image, denoised_image
 
 os.makedirs(output_dir, exist_ok=True)
-
-model.load_state_dict(torch.load('dncnn.pth'))
 
 for image_path in glob.glob(os.path.join(image_dir, '**', '*.png'), recursive=True):
     print(f"Processing {image_path}")  # Debug print to check paths
