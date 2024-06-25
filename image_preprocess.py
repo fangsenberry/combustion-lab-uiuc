@@ -4,6 +4,12 @@ import numpy as np
 from PIL import Image
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
+import numpy as np
+import cv2
+from glob import glob
+from tqdm import tqdm
+import os
+from matplotlib import pyplot as plt
 
 def extract_frames_to_png(tiff_path, output_dir, num_frames_to_skip=200):
     """
@@ -77,6 +83,97 @@ def manual_crop(image_path, start_x=0, start_y=0, end_x=None, end_y=None):
     # plt.title("After Cropping")
     # plt.axis('off')
     # plt.show()
+    
+import numpy as np
+import cv2
+from glob import glob
+from tqdm import tqdm
+import os
+
+def remove_vignetting():
+    image_files = glob('data/noisy_images_preprocessed/A01_C_DP_35.0/*.png')  # Adjust the path and file extension as needed
+    num_images = len(image_files)
+    print(f"found {num_images} images")
+    
+    # Initialize the sum image
+    sum_image = None
+
+    # Loop through the images and sum them
+    for file in tqdm(image_files):
+        img = cv2.imread(file, cv2.IMREAD_GRAYSCALE).astype(np.float32)
+        if sum_image is None:
+            sum_image = np.zeros_like(img)
+        sum_image += img
+
+    # Calculate the average image
+    avg_image = sum_image / num_images
+
+    # Apply Gaussian blur to estimate the vignetting pattern
+    kernel_size = (51, 51)  # Adjust kernel size based on image size and vignetting extent
+    vignetting_pattern = cv2.GaussianBlur(avg_image, kernel_size, 0)
+
+    # Normalize the vignetting pattern to create the correction mask
+    correction_mask = vignetting_pattern / np.max(vignetting_pattern)
+
+    # Process each image to correct vignetting
+    for file in tqdm(image_files):
+        img = cv2.imread(file, cv2.IMREAD_GRAYSCALE).astype(np.float32)
+        corrected_img = img / correction_mask
+        corrected_img = np.clip(corrected_img, 0, 255)  # Clip values to maintain valid intensity range
+        corrected_img = corrected_img.astype(np.uint8)
+        # Save the image with the same compression settings as the original
+        cv2.imwrite(f'data/test/v_corrected_{os.path.basename(file)}', corrected_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+
+def calculate_average_frame(image_files):
+    # Initialize the sum image
+    sum_image = None
+    num_images = len(image_files)
+    
+    # Loop through the images and sum them
+    for file in tqdm(image_files, desc="Calculating average frame"):
+        img = cv2.imread(file, cv2.IMREAD_GRAYSCALE).astype(np.float32)
+        if sum_image is None:
+            sum_image = np.zeros_like(img)
+        sum_image += img
+
+    # Calculate the average image
+    avg_image = sum_image / num_images
+    
+    # Normalize the average image to the range [0, 255]
+    avg_image_normalized = cv2.normalize(avg_image, None, 0, 255, cv2.NORM_MINMAX)
+    avg_image_normalized = avg_image_normalized.astype(np.uint8)
+    
+    # Display the average image
+    plt.figure(figsize=(10, 10))
+    plt.imshow(avg_image_normalized, cmap='gray')
+    plt.title('Average Frame')
+    plt.show()
+    
+    return avg_image
+
+def normalize_intensity(image, target_mean=128):
+    current_mean = np.mean(image)
+    adjustment_factor = target_mean / current_mean
+    normalized_image = image * adjustment_factor
+    normalized_image = np.clip(normalized_image, 0, 255)
+    return normalized_image.astype(np.uint8)
+
+def remove_striations(image_files, avg_image, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for file in tqdm(image_files, desc="Removing striations"):
+        img = cv2.imread(file, cv2.IMREAD_GRAYSCALE).astype(np.float32)
+        corrected_img = img - avg_image
+        
+        # Normalize the corrected image to the range [0, 255]
+        corrected_img_normalized = cv2.normalize(corrected_img, None, 0, 255, cv2.NORM_MINMAX)
+        corrected_img_normalized = corrected_img_normalized.astype(np.uint8)
+        
+        # Post-process to normalize the average pixel intensity
+        normalized_img = normalize_intensity(corrected_img_normalized)
+        
+        output_file = os.path.join(output_dir, f's_corrected_{os.path.basename(file)}')
+        cv2.imwrite(output_file, normalized_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
 
 def main():
     dir_path = 'noisy_images'  # Change this to your directory path
