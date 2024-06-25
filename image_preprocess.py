@@ -90,8 +90,8 @@ from glob import glob
 from tqdm import tqdm
 import os
 
-def remove_vignetting():
-    image_files = glob('data/noisy_images_preprocessed/A01_C_DP_35.0/*.png')  # Adjust the path and file extension as needed
+def remove_vignetting(image_dir, output_dir):
+    image_files = glob(f'{image_dir}*.png')  # Adjust the path and file extension as needed
     num_images = len(image_files)
     print(f"found {num_images} images")
     
@@ -122,7 +122,7 @@ def remove_vignetting():
         corrected_img = np.clip(corrected_img, 0, 255)  # Clip values to maintain valid intensity range
         corrected_img = corrected_img.astype(np.uint8)
         # Save the image with the same compression settings as the original
-        cv2.imwrite(f'data/test/v_corrected_{os.path.basename(file)}', corrected_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+        cv2.imwrite(f'{output_dir}/v_corrected_{os.path.basename(file)}', corrected_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
 
 def calculate_average_frame(image_files):
     # Initialize the sum image
