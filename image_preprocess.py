@@ -3,13 +3,9 @@ from skimage import io, exposure, img_as_uint
 import numpy as np
 from PIL import Image
 from tqdm.auto import tqdm
-import matplotlib.pyplot as plt
-import numpy as np
 import cv2
 from glob import glob
-from tqdm import tqdm
-import os
-from matplotlib import pyplot as plt
+import matplotlib.pyplot as plt
 
 def extract_frames_to_png(tiff_path, output_dir, num_frames_to_skip=200):
     """
@@ -54,7 +50,7 @@ def manual_crop(image_path, start_x=0, start_y=0, end_x=None, end_y=None):
     # Read the image
     image = Image.open(image_path)
     width, height = image.size
-    # print(f"Image size: {width} x {height}")
+
     # Set default values for end_x and end_y if not provided
     if end_x is None:
         end_x = width
@@ -66,32 +62,8 @@ def manual_crop(image_path, start_x=0, start_y=0, end_x=None, end_y=None):
 
     # Save the cropped image back
     cropped_image.save(image_path, format='PNG')
-    
-    # Display the original image
-    # plt.figure(figsize=(20, 20))
-    # plt.subplot(1, 2, 1)
-    # plt.imshow(image, cmap='gray')
-    # plt.title("Before Cropping")
-    # plt.axis('off')
 
-    # # Crop the image
-    # cropped_image = image.crop((start_x, start_y, end_x, end_y))
-
-    # # Display the cropped image
-    # plt.subplot(1, 2, 2)
-    # plt.imshow(cropped_image, cmap='gray')
-    # plt.title("After Cropping")
-    # plt.axis('off')
-    # plt.show()
-    
-import numpy as np
-import cv2
-from glob import glob
-from tqdm import tqdm
-import os
-
-def remove_vignetting(image_dir, output_dir):
-    image_files = glob(f'{image_dir}*.png')  # Adjust the path and file extension as needed
+def remove_vignetting(image_files, output_dir):
     num_images = len(image_files)
     print(f"found {num_images} images")
     
@@ -122,7 +94,10 @@ def remove_vignetting(image_dir, output_dir):
         corrected_img = np.clip(corrected_img, 0, 255)  # Clip values to maintain valid intensity range
         corrected_img = corrected_img.astype(np.uint8)
         # Save the image with the same compression settings as the original
-        cv2.imwrite(f'{output_dir}/v_corrected_{os.path.basename(file)}', corrected_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+        corrected_path = os.path.join(output_dir, f'v_corrected_{os.path.basename(file)}')
+        cv2.imwrite(corrected_path, corrected_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+
+    return glob(f'{output_dir}/*.png')
 
 def calculate_average_frame(image_files):
     # Initialize the sum image
@@ -144,10 +119,10 @@ def calculate_average_frame(image_files):
     avg_image_normalized = avg_image_normalized.astype(np.uint8)
     
     # Display the average image
-    plt.figure(figsize=(10, 10))
-    plt.imshow(avg_image_normalized, cmap='gray')
-    plt.title('Average Frame')
-    plt.show()
+    # plt.figure(figsize=(10, 10))
+    # plt.imshow(avg_image_normalized, cmap='gray')
+    # plt.title('Average Frame')
+    # plt.show()
     
     return avg_image
 
@@ -175,8 +150,35 @@ def remove_striations(image_files, avg_image, output_dir):
         output_file = os.path.join(output_dir, f's_corrected_{os.path.basename(file)}')
         cv2.imwrite(output_file, normalized_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
 
+def process_tiff_file(tiff_path, output_dir, start_x, start_y, end_x, end_y, num_frames_to_skip):
+    extracted_frames_dir = os.path.join(output_dir, 'extracted_frames')
+    os.makedirs(extracted_frames_dir, exist_ok=True)
+
+    # Extract frames to .png format, skipping the first num_frames_to_skip frames
+    extract_frames_to_png(tiff_path, extracted_frames_dir, num_frames_to_skip)
+
+    # Crop each extracted .png file
+    for frame_filename in tqdm(os.listdir(extracted_frames_dir), leave=False, colour='blue', desc='Cropping frames'):
+        if frame_filename.endswith('.png'):
+            frame_path = os.path.join(extracted_frames_dir, frame_filename)
+            manual_crop(frame_path, start_x, start_y, end_x, end_y)
+
+    # Remove vignetting
+    vignette_corrected_dir = os.path.join(output_dir, 'vignette_corrected')
+    os.makedirs(vignette_corrected_dir, exist_ok=True)
+    cropped_files = glob(f'{extracted_frames_dir}/*.png')
+    vignette_corrected_files = remove_vignetting(cropped_files, vignette_corrected_dir)
+
+    # Calculate the average frame for striation removal
+    avg_image = calculate_average_frame(vignette_corrected_files)
+
+    # Remove striations
+    final_output_dir = os.path.join(output_dir, 'final_corrected')
+    os.makedirs(final_output_dir, exist_ok=True)
+    remove_striations(vignette_corrected_files, avg_image, final_output_dir)
+
 def main():
-    dir_path = 'noisy_images'  # Change this to your directory path
+    dir_path = 'data/noisy_images'  # Change this to your directory path
     start_x, start_y, end_x, end_y = 0, 0, 600, None  # Set your cropping dimensions here
     num_frames_to_skip = 200  # Set the number of frames to skip here
 
@@ -189,18 +191,12 @@ def main():
         print(f"File Progress: {i + 1}/{len(os.listdir(dir_path))}")
         if filename.endswith('.tif'):
             tiff_path = os.path.join(dir_path, filename)
-            # Create a subdirectory for the extracted frames
-            extracted_frames_dir = os.path.join(preprocessed_dir, os.path.splitext(filename)[0])
-            os.makedirs(extracted_frames_dir, exist_ok=True)
-            
-            # Extract frames to .png format, skipping the first num_frames_to_skip frames
-            extract_frames_to_png(tiff_path, extracted_frames_dir, num_frames_to_skip)
+            # Create a subdirectory for the processed frames
+            output_sub_dir = os.path.join(preprocessed_dir, os.path.splitext(filename)[0])
+            os.makedirs(output_sub_dir, exist_ok=True)
 
-            # Crop each extracted .png file
-            for frame_filename in tqdm(os.listdir(extracted_frames_dir), leave=False, colour='blue', desc='Cropping frames'):
-                if frame_filename.endswith('.png'):
-                    frame_path = os.path.join(extracted_frames_dir, frame_filename)
-                    manual_crop(frame_path, start_x, start_y, end_x, end_y)
+            # Process the .tiff file
+            process_tiff_file(tiff_path, output_sub_dir, start_x, start_y, end_x, end_y, num_frames_to_skip)
 
 if __name__ == '__main__':
     main()
