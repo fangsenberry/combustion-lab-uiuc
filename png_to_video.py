@@ -1,6 +1,7 @@
 import cv2
 import os
 import re
+from tqdm.auto import tqdm
 
 def extract_frame_number(filename):
     match = re.search(r'frame_(\d+)', filename)
@@ -23,7 +24,7 @@ def images_to_video(image_dir, output_video, fps=30):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # You can use other codecs like 'XVID'
     video = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
 
-    for image in images:
+    for image in tqdm(images, colour='red', desc="writing frames", leave=False):
         img_path = os.path.join(image_dir, image)
         frame = cv2.imread(img_path)
         video.write(frame)
@@ -32,6 +33,6 @@ def images_to_video(image_dir, output_video, fps=30):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    image_directory = "data/noisy_images_preprocessed/A01_C_DP_35.0/final_corrected"
+    image_directory = "data/noisy_images_preprocessed/A01_C_DP_35.0/extracted_frames"
     output_video_path = "output_video.mp4"
     images_to_video(image_directory, output_video_path, fps=30)
