@@ -110,7 +110,7 @@ class CustomFlowDataset(Dataset):
 
             return img1, img2
 
-class Loss_manager():
+class Loss_manager:
     def __init__(self):
         self.error_meter = tools.Avg_meter_ls()
 
