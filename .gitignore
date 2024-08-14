@@ -166,3 +166,6 @@ data/
 test.ipynb
 
 temp_cropped/
+*.png
+*.npy
+*.csv
