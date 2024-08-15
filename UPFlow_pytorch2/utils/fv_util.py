@@ -15,6 +15,8 @@ from skimage.transform import warp
 from PIL import Image
 from matplotlib.colors import ListedColormap
 import flow_viz
+import pickle
+import h5py
 
 current_dir = Path(__file__).resolve()
 
@@ -27,431 +29,511 @@ sys.path.append(str(two_dirs_up))
 import edge_detect as ed
 
 ########################################################################################
-def pastel_colormap():
-    """Create a pastel colormap."""
-    colors = [
-        (204, 229, 255),  # Light blue
-        (255, 204, 204),  # Light red
-        (204, 255, 204),  # Light green
-        (255, 255, 204),  # Light yellow
-        (255, 204, 255),  # Light magenta
-        (204, 255, 255),  # Light cyan
-        (255, 229, 204),  # Light orange
-        (229, 204, 255),  # Light violet
-        (229, 255, 229)   # Light pastel green
-    ]
-    return ListedColormap(colors, name='pastel')
+class FlowConfig:
+    def __init__(self, **kwargs):
+        self.trial_path = kwargs.get('trial_path', r"D:\test_cases\UPF_A01_C_DP_35_trial_12")
+        self.img_path = kwargs.get('img_path', r"D:\final_corrected_512-complex-27-6-24.pth_inference")
+        self.dir_ext = kwargs.get('dir_ext', r'flow_npy\result_')
+        self.step = kwargs.get('step', 1)
+        self.start_x = kwargs.get('start_x', 0)
+        self.end_x = kwargs.get('end_x', None)
+        self.start_y = kwargs.get('start_y', 0)
+        self.end_y = kwargs.get('end_y', None)
+        self.reverse_flow = kwargs.get('reverse_flow', False)
+        self.binary_image_analysis = kwargs.get('binary_image_analysis', False)
+        self.warp_analysis = kwargs.get('warp_analysis', False)
+        self.custom_range = kwargs.get('custom_range', 25)
+        self.hdf5_path = kwargs.get('hdf5_path', 'flow_data.h5')
 
-def manual_crop(image, start_x=0, end_x=None, start_y=0, end_y=None):
-    if image.ndim == 3:
-        _, height, width = image.shape
-    else:
-        height, width = image.shape
+    def save(self, file_path):
+        with open(file_path, 'wb') as f:
+            pickle.dump(self.__dict__, f)
+
+    @staticmethod
+    def load(file_path):
+        with open(file_path, 'rb') as f:
+            kwargs = pickle.load(f)
+        return FlowConfig(**kwargs)
+
+class FlowInitialization:
+
+    def __init__(self, config):
+        self.config = config #TODO: Add config
+        self.flow_vis_list = None
+        self.flow_vis_images = None
+        self.u_vectors = None
+        self.v_vectors = None
+        self.img_list = None
+        self.warped_img_list = None
+        self.gradient_list = None
+        self.binary_image_list = None
+        self.x=None
+        self.y=None
+
+
+    @staticmethod
+    def save_to_hdf5(file_path, **kwargs):
+        with h5py.File(file_path, 'w') as f:
+            for key, value in kwargs.items():
+                f.create_dataset(key, data=value)
+
+    @staticmethod
+    def load_from_hdf5(file_path):
+        data = {}
+        with h5py.File(file_path, 'r') as f:
+            for key in f.keys():
+                data[key] = np.array(f[key])
+        return data
+
+    def process_and_save_data(self):
+        self.flow_vis_list, self.img_list, self.warped_img_list, self.gradient_list, self.binary_image_list, self.x, self.y = self.create_flow_lists(
+            self.config.trial_path, 
+            self.config.img_path, 
+            self.config.dir_ext, 
+            step=self.config.step, 
+            start_x=self.config.start_x, 
+            end_x=self.config.end_x, 
+            start_y=self.config.start_y, 
+            end_y=self.config.end_y, 
+            reverse_flow=self.config.reverse_flow, 
+            binary_image=self.config.binary_image_analysis, 
+            warp=self.config.warp_analysis, 
+            custom_range=self.config.custom_range
+        )
+
+        self.save_to_hdf5(
+            self.config.hdf5_path,
+            flow_vis_images=np.array(self.flow_vis_images, dtype=object),
+            u_vectors=np.array(self.u_vectors, dtype=object),
+            v_vectors=np.array(self.v_vectors, dtype=object),
+            img_list=np.array(self.img_list, dtype=object),
+            warped_img_list=np.array(self.warped_img_list, dtype=object),
+            gradient_list=np.array(self.gradient_list, dtype=object),
+            binary_image_list=np.array(self.binary_image_list, dtype=object),
+            x=np.array(self.x, dtype=object),
+            y=np.array(self.y, dtype=object)
+        )
+
+    def load_data(self):
+        data = self.load_from_hdf5(self.config.hdf5_path)
+        self.flow_vis_images = data['flow_vis_images']
+        self.u_vectors = data['u_vectors']
+        self.v_vectors = data['v_vectors']
+        self.img_list = data['img_list']
+        self.warped_img_list = data['warped_img_list']
+        self.gradient_list = data['gradient_list']
+        self.binary_image_list = data['binary_image_list']
+        self.x = data['x']
+        self.y = data['y']
     
-    end_x = width if end_x is None else end_x
-    end_y = height if end_y is None else end_y
-
-    start_x = max(0, start_x)
-    end_x = min(width, end_x)
-    start_y = max(0, start_y)
-    end_y = min(height, end_y)
-
-    if image.ndim == 3:
-        return image[:, start_y:end_y, start_x:end_x]
-    else:
-        return image[start_y:end_y, start_x:end_x]
-
-def visualize_flow(flow, type='basic'):
-    """Visualize optical flow."""
-    hsv = np.zeros((flow.shape[1], flow.shape[2], 3), dtype=np.uint8)
-    mag, ang = cv2.cartToPolar(flow[0], flow[1])
-    hsv[..., 0] = ang * 180 / np.pi / 2
-    hsv[..., 1] = 255
-    hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
-    color_map = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-    if type == 'pastel':
-        pastel_map=pastel_colormap()
-        color_map=pastel_map(hsv[...,2]).astype(np.uint8)
-    elif type == 'custom':
-        color_map = flow_viz.flow_to_image(flow)
-    return color_map
-
-
-def warp_image_skimage(image, flow):
-    h, w = image.shape
-    if flow.shape != (2, h, w):
-        raise ValueError(f"Expected flow shape (2, {h}, {w}), but got {flow.shape}")
-
-    x, y = np.meshgrid(np.arange(w), np.arange(h))
-    map_x, map_y = x - flow[0], y - flow[1]
-    coords = np.stack([map_y, map_x], axis=0)
-
-    return warp(image, coords, mode='wrap', order=3)
-
-def normalize_image(image, target_mean, target_std):
-    image = image.astype(np.float32)
-    image_mean, image_std = np.mean(image), np.std(image)
-    normalized_image = (image - image_mean) / image_std * target_std + target_mean
-    return np.clip(normalized_image, 0, 255).astype(np.uint8)
-
-def compute_gradient(image1, image2):
-    # Normalize images to have similar mean and standard deviation
-    # target_mean = (np.mean(image1) + np.mean(image2)) / 2
-    # target_std = (np.std(image1) + np.std(image2)) / 2
-    # image1 = normalize_image(image1, target_mean, target_std)
-    # image2 = normalize_image(image2, target_mean, target_std)
-    
-    # Compute the signed gradient
-    gradient = image2.astype(np.float32) - image1.astype(np.float32)
-    return gradient
-
-def gradient_to_heatmap(gradient, global_min, global_max):
-    # Normalize the gradient to the range [0, 1] using global min and max
-    normalized_gradient = (gradient - global_min) / (global_max - global_min)
-    
-    # Apply the 'viridis' colormap
-    heatmap = cm.coolwarm(normalized_gradient)  # Use 'viridis' colormap and discard the alpha channel
-    heatmap = (heatmap * 510).astype(np.uint8)
-    return heatmap
-
-def save_heatmap_with_colorbar(heatmap, global_min, global_max, filename):
-    plt.figure(figsize=(10, 8))
-    plt.imshow(heatmap, cmap='coolwarm', vmin=global_min, vmax=global_max)
-    plt.colorbar(label='Gradient Intensity')
-    plt.axis('off')
-    plt.savefig(filename, bbox_inches='tight', pad_inches=0)
-    plt.close()
-
-def flow_params(flow, step=10, start_x=0, end_x=None, start_y=0, end_y=None, reverse_flow=False, flow_vis_type='basic'):
-    """
-    extract flow parameters for visualization
-    """
-    
-    H, W = flow.shape[1:]
-    y, x = np.mgrid[0:H:step, 0:W:step]
-    u = flow[0, ::step, ::step]
-    v = flow[1, ::step, ::step]
-
-    if reverse_flow:
-        u, v = -u, -v
-
-    flow_vis = visualize_flow(flow, type=flow_vis_type)
-
-    return flow_vis, x, y, u, v
-
-def numerical_sort_key(file_name):
-    return int(file_name.split('_')[-1].split('.')[0])
-
-def flow_checks(flow):
-    if flow.ndim == 4:
-        # Assuming the shape is (N, 2, H, W) and we take the first element (N should be 1 for batch size 1)
-        flow = flow[0]
-    
-    if flow.shape[0] != 2:
-        #move final channel to first channel
-        flow = np.moveaxis(flow, -1, 0)
-    
-    return flow
-
-def load_and_visualize_flows(directory, im_dir, base, step=10, start_y=0, end_y=None, start_x=0, end_x=None, reverse_flow=False, binary_image=False, warp=False, custom_range=25, flow_vis_type='basic'):
-    flow_vis_list = []
-    img_list = []
-    warped_img_list = []
-    gradient_list = []
-    binary_image_list = []
-
-    target_height = None
-    target_width = None
-
-    image_files = sorted([f for f in os.listdir(im_dir) if f.endswith('.png')], key=numerical_sort_key)
-    if custom_range == 'end':
-        custom_range = len(image_files)-1
-    
-    for idx in range(custom_range):
-        # Load flow files
-        filepath = os.path.join(directory, f"{base}{idx}.npy")
-        flow = flow_checks(np.load(filepath))
-        
-        # Determine target size from the first flow
-        if idx == 0:
-            target_height, target_width = flow.shape[1], flow.shape[2]
-        
-        flow_vis, x, y, u, v = flow_params(flow, step, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y, reverse_flow=reverse_flow, flow_vis_type=flow_vis_type)
-        flow_vis_list.append((flow_vis, x, y, u, v))
-
-        # Load and process images
-        img_path = os.path.join(im_dir, image_files[idx])
-        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE).astype(np.uint8)
-        #set image to have a mean of 127
-        img = (img - np.mean(img) + 127).clip(0, 255)
-        
-        # Convert to 8-bit and perform segmentation
-        if binary_image:
-            _, bin_im, _, _ = ed.lig_segment(img_path, canny_threshold1=20, canny_threshold2=100, min_area=10, max_area=1000, k=3, plot_kmeans=None)
-            cropped_bin_im = cv2.resize(bin_im, (target_width, target_height))
-            binary_image_list.append(cropped_bin_im)
-        
-        # Resize/crop the image and binary image to the target dimensions
-        cropped_img = cv2.resize(img, (target_width, target_height))
-
-        
-        img_list.append(cropped_img)
-
-        if idx > 0 and warp:
-            prev_flow_path = os.path.join(directory, f"{base}{idx-1}.npy")
-            prev_flow = flow_checks(np.load(prev_flow_path))
-            warped_img = warp_image_skimage(img_list[idx-1], prev_flow)
-            warped_img_list.append(warped_img)
-            
-            # Compute the gradient between the warped image and the current image
-            gradient = compute_gradient(cropped_img, warped_img)
-            gradient_list.append(gradient)
+    @staticmethod
+    def manual_crop(image, start_x=0, end_x=None, start_y=0, end_y=None):
+        if image.ndim == 3:
+            _, height, width = image.shape
         else:
-            warped_img_list.append(cropped_img)
-            gradient_list.append(np.zeros_like(cropped_img))  # No gradient for the first frame
+            height, width = image.shape
 
-    return flow_vis_list, img_list, warped_img_list, gradient_list, binary_image_list
+        end_x = width if end_x is None else end_x
+        end_y = height if end_y is None else end_y
 
-def plot_flow_vectors(flow_vis_list, img_list, binary_image_list, start_x=0, end_x=None, start_y=0, end_y=None, step=10):
-    # for idx in range(len(flow_vis_list)):
-    for idx in range(30):
-        flow_vis, x, y, u, v = flow_vis_list[idx]
-        original_img = img_list[idx]
-        binary_img = binary_image_list[idx]
-        
-        # Crop the images
-        cropped_img = manual_crop(original_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
-        cropped_binary_img = manual_crop(binary_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
-        
-        plt.figure(figsize=(10, 10))
-        plt.imshow(cropped_img, cmap='gray')
-        
-        # Determine cropping bounds
-        if end_x is None:
-            end_x = original_img.shape[1]
-        if end_y is None:
-            end_y = original_img.shape[0]
-        
-        # Plot flow vectors only where binary_img is non-zero (indicating fuel regions)
-        for i in range(0, cropped_img.shape[0], step):
-            for j in range(0, cropped_img.shape[1], step):
-                u_idx = (i + start_y) // step
-                v_idx = (j + start_x) // step
-                if u_idx < u.shape[0] and v_idx < u.shape[1] and cropped_binary_img[i, j] > 0:
-                    plt.arrow(j, i, u[u_idx, v_idx], v[u_idx, v_idx], color='red', head_width=1, head_length=1)
-        
-        # plt.title(f'Flow Vectors for Frame {idx+1}')
+        start_x = max(0, start_x)
+        end_x = min(width, end_x)
+        start_y = max(0, start_y)
+        end_y = min(height, end_y)
+
+        if image.ndim == 3:
+            return image[:, start_y:end_y, start_x:end_x]
+        else:
+            return image[start_y:end_y, start_x:end_x]
+
+    @staticmethod
+    def warp_image_skimage(image, flow):
+        h, w = image.shape
+        if flow.shape != (2, h, w):
+            raise ValueError(f"Expected flow shape (2, {h}, {w}), but got {flow.shape}")
+
+        x, y = np.meshgrid(np.arange(w), np.arange(h))
+        map_x, map_y = x - flow[0], y - flow[1]
+        coords = np.stack([map_y, map_x], axis=0)
+
+        return warp(image, coords, mode='wrap', order=3)
+
+    @staticmethod
+    def normalize_image(image, target_mean, target_std):
+        image = image.astype(np.float32)
+        image_mean, image_std = np.mean(image), np.std(image)
+        normalized_image = (image - image_mean) / image_std * target_std + target_mean
+        return np.clip(normalized_image, 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def convert_to_uint8(image):
+        image = (image - image.min()) / (image.max() - image.min()) * 255
+        return image.astype(np.uint8)
+
+    @staticmethod
+    def compute_gradient(image1, image2):
+        gradient = image2.astype(np.float32) - image1.astype(np.float32)
+        return gradient
+
+    @staticmethod
+    def gradient_to_heatmap(gradient, global_min, global_max):
+        normalized_gradient = (gradient - global_min) / (global_max - global_min)
+        heatmap = cm.coolwarm(normalized_gradient)  # Use 'coolwarm' colormap
+        heatmap = (heatmap * 255).astype(np.uint8)
+        return heatmap
+
+    @staticmethod
+    def save_heatmap_with_colorbar(heatmap, global_min, global_max, filename):
+        plt.figure(figsize=(10, 8))
+        plt.imshow(heatmap, cmap='coolwarm', vmin=global_min, vmax=global_max)
+        plt.colorbar(label='Gradient Intensity')
         plt.axis('off')
-        plt.imshow(cropped_img, cmap='gray')
-        plt.tight_layout()
-        plt.show()
+        plt.savefig(filename, bbox_inches='tight', pad_inches=0)
+        plt.close()
 
-def plot_flow_vectors_as_video(flow_vis_list, img_list, binary_image_list, start_x=0, end_x=None, start_y=0, end_y=None, step=10, video_filename='flow_vectors.mp4'):
-    fig, ax = plt.subplots(figsize=(10, 10))
-
-    # Determine the cropping bounds for consistent plot size
-    if end_x is None:
-        end_x = img_list[0].shape[1]
-    if end_y is None:
-        end_y = img_list[0].shape[0]
-
-    def update(idx):
-        ax.clear()
-        flow_vis, x, y, u, v = flow_vis_list[idx]
-        original_img = img_list[idx]
-        binary_img = binary_image_list[idx]
-
-        # Crop the images
-        cropped_img = manual_crop(original_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
-        cropped_binary_img = manual_crop(binary_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
-        
-        ax.imshow(cropped_img, cmap='gray')
-
-        # Plot flow vectors only where binary_img is non-zero (indicating fuel regions)
-        for i in range(0, cropped_img.shape[0], step):
-            for j in range(0, cropped_img.shape[1], step):
-                u_idx = (i + start_y) // step
-                v_idx = (j + start_x) // step
-                if u_idx < u.shape[0] and v_idx < u.shape[1] and cropped_binary_img[i, j] > 0:
-                    ax.arrow(j, i, u[u_idx, v_idx], v[u_idx, v_idx], color='red', head_width=1, head_length=1)
-        
-        ax.axis('off')
-        ax.set_xlim(0, cropped_img.shape[1])
-        ax.set_ylim(cropped_img.shape[0], 0)
-
-    anim = FuncAnimation(fig, update, frames=len(flow_vis_list), repeat=False)
-    Writer = writers['ffmpeg']
-    writer = Writer(fps=5, metadata=dict(artist='Me'), bitrate=1800)
-    anim.save(video_filename, writer=writer)
-
-def plot_flow_and_colorwheel(flow_vis, binary_image=None):
-    # Apply the binary mask to the flow visualization
-    if binary_image is not None:
-        masked_flow_vis = cv2.bitwise_and(flow_vis, flow_vis, mask=binary_image)
-    else:
-        masked_flow_vis = flow_vis
+    @staticmethod
+    def pastel_colormap():
+        """Create a pastel colormap."""
+        colors = [
+            (204, 229, 255),  # Light blue
+            (255, 204, 204),  # Light red
+            (204, 255, 204),  # Light green
+            (255, 255, 204),  # Light yellow
+            (255, 204, 255),  # Light magenta
+            (204, 255, 255),  # Light cyan
+            (255, 229, 204),  # Light orange
+            (229, 204, 255),  # Light violet
+            (229, 255, 229)   # Light pastel green
+        ]
+        return ListedColormap(colors, name='pastel')
     
-    fig = plt.figure(figsize=(20, 10))
-    gs = gridspec.GridSpec(1, 2, width_ratios=[3, 1])
+    @staticmethod
+    def visualize_flow(flow, type='basic'):
+        """Visualize optical flow."""
+        hsv = np.zeros((flow.shape[1], flow.shape[2], 3), dtype=np.uint8)
+        mag, ang = cv2.cartToPolar(flow[0], flow[1])
+        hsv[..., 0] = ang * 180 / np.pi / 2
+        hsv[..., 1] = 255
+        hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
+        color_map = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        if type == 'pastel':
+            pastel_map = FlowInitialization.pastel_colormap()
+            color_map = pastel_map(hsv[..., 2]).astype(np.uint8)
+        elif type == 'custom':
+            color_map = flow_viz.flow_to_image(flow)
+        return color_map
 
-    # Plot the optical flow RGB image over the binary image
-    ax0 = plt.subplot(gs[0])
-    ax0.imshow(masked_flow_vis)
-    ax0.set_title('Optical Flow', fontsize=18)
-    ax0.axis('off')
+    @staticmethod
+    def flow_params(flow, step=10, start_x=0, end_x=None, start_y=0, end_y=None, reverse_flow=False, flow_vis_type='basic'):
+        """Extract flow parameters for visualization."""
+        u = flow[0, ::step, ::step]
+        v = flow[1, ::step, ::step]
 
-    # Create and plot the color wheel
-    ax1 = plt.subplot(gs[1])
-    hsv_colorwheel = np.zeros((256, 256, 3), dtype=np.uint8)
-    for i in range(256):
-        for j in range(256):
-            dy = i - 128
-            dx = j - 128
-            angle = np.arctan2(dy, dx)
-            magnitude = np.sqrt(dx**2 + dy**2)
-            hue = (angle * 180 / np.pi / 2 + 180) % 180
-            hsv_colorwheel[i, j, 0] = hue
-            hsv_colorwheel[i, j, 1] = 255
-            hsv_colorwheel[i, j, 2] = np.clip(magnitude * (255 / 128), 0, 255)
+        if reverse_flow:
+            u, v = -u, -v
 
-    colorwheel = cv2.cvtColor(hsv_colorwheel, cv2.COLOR_HSV2BGR)
-    ax1.imshow(colorwheel)
-    ax1.set_title('Colorwheel: Hue (Direction), Intensity (Magnitude)', fontsize=18)
-    ax1.axis('off')
+        flow_vis = FlowInitialization.visualize_flow(flow, type=flow_vis_type)
 
-    # plt.show()
-    plt.savefig('flow_and_colorwheel.png', bbox_inches='tight', pad_inches=0)
+        return flow_vis, u, v
 
-def plot_and_save_flow(flow_vis_list, img_list, output_dir='output_directory', plot_type='flow_vis', fps=2, mask=False):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    @staticmethod
+    def plot_flow_vectors(flow_vis_list, img_list, binary_image_list, start_x=0, end_x=None, start_y=0, end_y=None, step=10):
+        for idx in range(len(flow_vis_list)):
+            flow_vis, u, v = flow_vis_list[idx]
+            original_img = img_list[idx]
+            binary_img = binary_image_list[idx]
 
-    fig, ax = plt.subplots(1, 1, figsize=(18, 6))
+            # Crop the images
+            cropped_img = FlowInitialization.manual_crop(original_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
+            cropped_binary_img = FlowInitialization.manual_crop(binary_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
 
-    def update_plot(i):
-        ax.cla()
-        
-        flow_vis, x, y, u, v = flow_vis_list[i]
-        img = img_list[i]
+            plt.figure(figsize=(10, 10))
+            plt.imshow(cropped_img, cmap='gray')
 
-        # Ensure x, y, u, and v have the same shape as img
-        if x.shape != img.shape:
-            x, y = np.meshgrid(np.arange(img.shape[1]), np.arange(img.shape[0]))
+            # Determine cropping bounds
+            if end_x is None:
+                end_x = original_img.shape[1]
+            if end_y is None:
+                end_y = original_img.shape[0]
 
+            # Plot flow vectors only where binary_img is non-zero (indicating fuel regions)
+            for i in range(0, cropped_img.shape[0], step):
+                for j in range(0, cropped_img.shape[1], step):
+                    u_idx = (i + start_y) // step
+                    v_idx = (j + start_x) // step
+                    if u_idx < u.shape[0] and v_idx < u.shape[1] and cropped_binary_img[i, j] > 0:
+                        plt.arrow(j, i, u[u_idx, v_idx], v[u_idx, v_idx], color='red', head_width=1, head_length=1)
 
-        # Apply the mask to flow vectors
-        u_resized = cv2.resize(u, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
-        v_resized = cv2.resize(v, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
-        if mask==True:
-            mask = (img > 0).astype(np.uint8) * 255  # Convert mask to 8-bit image
-            u = u_resized[mask > 0]
-            v = v_resized[mask > 0]
-            x = x[mask > 0]
-            y = y[mask > 0]
-            flow_vis = cv2.bitwise_and(flow_vis.astype(np.uint8), flow_vis.astype(np.uint8), mask=mask)
+            plt.axis('off')
+            plt.imshow(cropped_img, cmap='gray')
+            plt.tight_layout()
+            plt.show()
 
-        if plot_type in ['flow_vis', 'both']:
-            # Plot color flow visualization
-            ax.imshow(flow_vis)
+    @staticmethod
+    def plot_flow_vectors_as_video(flow_vis_list, img_list, binary_image_list, start_x=0, end_x=None, start_y=0, end_y=None, step=10, video_filename='flow_vectors.mp4'):
+        fig, ax = plt.subplots(figsize=(10, 10))
+
+        # Determine the cropping bounds for consistent plot size
+        if end_x is None:
+            end_x = img_list[0].shape[1]
+        if end_y is None:
+            end_y = img_list[0].shape[0]
+
+        def update(idx):
+            ax.clear()
+            flow_vis, u, v = flow_vis_list[idx]
+            original_img = img_list[idx]
+            binary_img = binary_image_list[idx]
+
+            # Crop the images
+            cropped_img = FlowInitialization.manual_crop(original_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
+            cropped_binary_img = FlowInitialization.manual_crop(binary_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
+
+            ax.imshow(cropped_img, cmap='gray')
+
+            # Plot flow vectors only where binary_img is non-zero (indicating fuel regions)
+            for i in range(0, cropped_img.shape[0], step):
+                for j in range(0, cropped_img.shape[1], step):
+                    u_idx = (i + start_y) // step
+                    v_idx = (j + start_x) // step
+                    if u_idx < u.shape[0] and v_idx < u.shape[1] and cropped_binary_img[i, j] > 0:
+                        ax.arrow(j, i, u[u_idx, v_idx], v[u_idx, v_idx], color='red', head_width=1, head_length=1)
+
             ax.axis('off')
-            plt.savefig(os.path.join(output_dir, f'flow_vis_{i:04d}.png'), bbox_inches='tight', pad_inches=0)
-        
-        if plot_type in ['quiver', 'both']:
-            if plot_type == 'both':
-                ax.cla()  # Clear the current plot for the next quiver plot
-            # Plot quiver plot
-            ax.quiver(x, y, u, v, angles='xy', scale_units='xy', scale=5, color='r')
-            ax.invert_yaxis()
-            ax.axis('off')
-            plt.savefig(os.path.join(output_dir, f'quiver_plot_{i:04d}.png'), bbox_inches='tight', pad_inches=0)
-        
-    for i in range(len(flow_vis_list)):
-        update_plot(i)
-        plt.cla()  # Clear the current plot for the next frame
+            ax.set_xlim(0, cropped_img.shape[1])
+            ax.set_ylim(cropped_img.shape[0], 0)
 
-    plt.close(fig)
+        anim = FuncAnimation(fig, update, frames=len(flow_vis_list), repeat=False)
+        Writer = writers['ffmpeg']
+        writer = Writer(fps=5, metadata=dict(artist='Me'), bitrate=1800)
+        anim.save(video_filename, writer=writer)
 
-def save_warped_images(warped_img_list, save_dir):
-    """
-    Save warped images to the specified directory.
+    @staticmethod
+    def plot_flow_and_colorwheel(flow_vis, binary_image=None):
+        # Apply the binary mask to the flow visualization
+        if binary_image is not None:
+            masked_flow_vis = cv2.bitwise_and(flow_vis, flow_vis, mask=binary_image)
+        else:
+            masked_flow_vis = flow_vis
 
-    Parameters:
-    warped_img_list (list): List of warped images.
-    save_dir (str): Directory where images will be saved.
-    """
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+        fig = plt.figure(figsize=(20, 10))
+        gs = gridspec.GridSpec(1, 2, width_ratios=[3, 1])
+
+        # Plot the optical flow RGB image over the binary image
+        ax0 = plt.subplot(gs[0])
+        ax0.imshow(masked_flow_vis)
+        ax0.set_title('Optical Flow', fontsize=18)
+        ax0.axis('off')
+
+        # Create and plot the color wheel
+        ax1 = plt.subplot(gs[1])
+        hsv_colorwheel = np.zeros((256, 256, 3), dtype=np.uint8)
+        for i in range(256):
+            for j in range(256):
+                dy = i - 128
+                dx = j - 128
+                angle = np.arctan2(dy, dx)
+                magnitude = np.sqrt(dx**2 + dy**2)
+                hue = (angle * 180 / np.pi / 2 + 180) % 180
+                hsv_colorwheel[i, j, 0] = hue
+                hsv_colorwheel[i, j, 1] = 255
+                hsv_colorwheel[i, j, 2] = np.clip(magnitude * (255 / 128), 0, 255)
+
+        colorwheel = cv2.cvtColor(hsv_colorwheel, cv2.COLOR_HSV2BGR)
+        ax1.imshow(colorwheel)
+        ax1.set_title('Colorwheel: Hue (Direction), Intensity (Magnitude)', fontsize=18)
+        ax1.axis('off')
+
+        plt.savefig('flow_and_colorwheel.png', bbox_inches='tight', pad_inches=0)
+
+    @staticmethod
+    def numerical_sort_key(file_name):
+        return int(file_name.split('_')[-1].split('.')[0])
+
+    @staticmethod
+    def flow_checks(flow):
+        if flow.ndim == 4:
+            # Assuming the shape is (N, 2, H, W) and we take the first element (N should be 1 for batch size 1)
+            flow = flow[0]
+
+        if flow.shape[0] != 2:
+            # Move final channel to first channel
+            flow = np.moveaxis(flow, -1, 0)
+
+        return flow
+
+    @staticmethod
+    def create_flow_lists(self, directory, im_dir, base, step=10, start_y=0, end_y=None, start_x=0, end_x=None, reverse_flow=False, binary_image=False, warp=False, custom_range=25, flow_vis_type='basic'):
+        flow_vis_list = []
+        img_list = []
+        warped_img_list = []
+        gradient_list = []
+        binary_image_list = []
+
+        target_height = None
+        target_width = None
+
+        image_files = sorted([f for f in os.listdir(im_dir) if f.endswith('.png')], key=FlowInitialization.numerical_sort_key)
+        if custom_range == 'end':
+            custom_range = len(image_files) - 1
+
+        for idx in range(custom_range):
+            # Load flow files
+            filepath = os.path.join(directory, f"{base}{idx}.npy")
+            flow = FlowInitialization.flow_checks(np.load(filepath))
+
+            # Determine target size from the first flow
+            if idx == 0:
+                target_height, target_width = flow.shape[1], flow.shape[2]
+                y, x = np.mgrid[0:target_height:step, 0:target_width:step]
+
+            flow_vis, u, v = FlowInitialization.flow_params(flow, step, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y, reverse_flow=reverse_flow, flow_vis_type=flow_vis_type)
+            flow_vis_list.append((flow_vis, u, v))
+
+            # Load and process images
+            img_path = os.path.join(im_dir, image_files[idx])
+            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+            # Set image to have a mean of 127
+            img = (img - np.mean(img) + 127).clip(0, 255)
+
+            # Convert to 8-bit and perform segmentation
+            if binary_image:
+                _, bin_im, _, _ = ed.lig_segment(img_path, canny_threshold1=20, canny_threshold2=100, min_area=10, max_area=1000, k=3, plot_kmeans=None)
+                cropped_bin_im = cv2.resize(bin_im, (target_width, target_height))
+                binary_image_list.append(cropped_bin_im)
+
+            # Resize/crop the image and binary image to the target dimensions
+            cropped_img = cv2.resize(img, (target_width, target_height))
+
+            img_list.append(cropped_img)
+
+            if idx > 0 and warp:
+                prev_flow_path = os.path.join(directory, f"{base}{idx - 1}.npy")
+                prev_flow = FlowInitialization.flow_checks(np.load(prev_flow_path))
+                warped_img = FlowInitialization.warp_image_skimage(img_list[idx - 1], prev_flow)
+                warped_img_list.append(warped_img)
+
+                # Compute the gradient between the warped image and the current image
+                gradient = FlowInitialization.compute_gradient(cropped_img, warped_img)
+                gradient_list.append(gradient)
+            else:
+                warped_img_list.append(cropped_img)
+                gradient_list.append(np.zeros_like(cropped_img))  # No gradient for the first frame
+
+        return flow_vis_list, img_list, warped_img_list, gradient_list, binary_image_list, x, y
+
+    @staticmethod
+    def save_warped_images(warped_img_list, save_dir):
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+
+        for i, warped_img in enumerate(warped_img_list):
+            if warped_img.dtype != np.uint8:
+                warped_img = FlowInitialization.convert_to_uint8(warped_img)
+            img_path = os.path.join(save_dir, f'warped_image_{i:04d}.png')
+            Image.fromarray(warped_img).save(img_path)
+
+    @staticmethod
+    def generate_and_save_global_heatmaps(gradient_list, save_dir):
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+
+        # Combine all gradients
+        all_gradients = np.concatenate([gradient.flatten() for gradient in gradient_list])
+        absolute_gradients = np.abs(all_gradients)
+
+        # Compute global min and max
+        global_min = np.min(all_gradients)
+        global_max = np.max(all_gradients)
+        print(f"Global min: {global_min}, Global max: {global_max}")
+
+        # Compute average of absolute gradients
+        average_absolute_gradient = np.mean(absolute_gradients)
+        print(f"Average of the absolute gradients: {average_absolute_gradient}")
+
+        # Generate and save heatmap images
+        for i, gradient in enumerate(gradient_list):
+            heatmap = FlowInitialization.gradient_to_heatmap(gradient, global_min, global_max)
+            filename = os.path.join(save_dir, f"gradient_{i:04d}.png")
+            FlowInitialization.save_heatmap_with_colorbar(heatmap, global_min, global_max, filename)
     
-    for i, warped_img in enumerate(warped_img_list):
-        if warped_img.dtype != np.uint8:
-            warped_img = convert_to_uint8(warped_img)
-        img_path = os.path.join(save_dir, f'warped_image_{i:04d}.png')
-        Image.fromarray(warped_img).save(img_path)
-
-def generate_and_save_global_heatmaps(gradient_list, save_dir):
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
     
-    # Combine all gradients
-    all_gradients = np.concatenate([gradient.flatten() for gradient in gradient_list])
-    absolute_gradients = np.abs(all_gradients)
-    
-    # Compute global min and max
-    global_min = np.min(all_gradients)
-    global_max = np.max(all_gradients)
-    print(f"Global min: {global_min}, Global max: {global_max}")
-    
-    # Compute average of absolute gradients
-    average_absolute_gradient = np.mean(absolute_gradients)
-    print(f"Average of the absolute gradients: {average_absolute_gradient}")
-    
-    # Generate and save heatmap images
-    for i, gradient in enumerate(gradient_list):
-        heatmap = gradient_to_heatmap(gradient, global_min, global_max)
-        filename = os.path.join(save_dir, f"gradient_{i:04d}.png")
-        save_heatmap_with_colorbar(heatmap, global_min, global_max, filename)
+    def plot_and_save_flow(self, flow_vis_list, img_list, output_dir='output_directory', plot_type='flow_vis', fps=2, mask=False):
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
 
-def save_binary_original_overlap(original_image, binary_image, path=None):
-    overlay_image=np.zeros_like(original_image)
-    mask= binary_image>0
-    overlay_image[mask]=original_image[mask]
-    plt.imshow(overlay_image, cmap='gray')
-    plt.axis('off')
-    plt.savefig(path, bbox_inches='tight', pad_inches=0)
-    plt.close()
+        fig, ax = plt.subplots(1, 1, figsize=(18, 6))
 
-def convert_to_uint8(image):
-    """
-    Convert an image to uint8 format.
-    """
-    image = (image - image.min()) / (image.max() - image.min()) * 255
-    return image.astype(np.uint8)
+        def update_plot(i):
+            ax.cla()
+            
+            flow_vis, u, v = flow_vis_list[i]
+            img = img_list[i]
 
-def save_synethetic_warp_pairs(img_list, warped_img_list, save_dir):
-    """
-    Save images in the specified order.
+            # Ensure x, y, u, and v have the same shape as img
+            if x.shape != img.shape:
+                x, y = np.meshgrid(np.arange(img.shape[1]), np.arange(img.shape[0]))
 
-    Parameters:
-    img_list (list): List of original images.
-    warped_img_list (list): List of warped images.
-    save_dir (str): Directory where images will be saved.
-    """
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-    
-    for i in range(len(img_list)):
-        # Save the first image from img_list
-        img1 = convert_to_uint8(img_list[i])
-        img1_path = os.path.join(save_dir, f'image_{2*i+1:04d}.png')
-        Image.fromarray(img1).save(img1_path)
 
-        # Save the second image from warped_img_list if it exists
-        if i+1 < len(warped_img_list):
-            img2 = convert_to_uint8(warped_img_list[i+1])
-            img2_path = os.path.join(save_dir, f'image_{2*i+2:04d}.png')
-            Image.fromarray(img2).save(img2_path)
+            # Apply the mask to flow vectors
+            u_resized = cv2.resize(u, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
+            v_resized = cv2.resize(v, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
+            if mask==True:
+                mask = (img > 0).astype(np.uint8) * 255  # Convert mask to 8-bit image
+                u = u_resized[mask > 0]
+                v = v_resized[mask > 0]
+                x = x[mask > 0]
+                y = y[mask > 0]
+                flow_vis = cv2.bitwise_and(flow_vis.astype(np.uint8), flow_vis.astype(np.uint8), mask=mask)
 
-##################################################
+            if plot_type in ['flow_vis', 'both']:
+                # Plot color flow visualization
+                ax.imshow(flow_vis)
+                ax.axis('off')
+                plt.savefig(os.path.join(output_dir, f'flow_vis_{i:04d}.png'), bbox_inches='tight', pad_inches=0)
+            
+            if plot_type in ['quiver', 'both']:
+                if plot_type == 'both':
+                    ax.cla()  # Clear the current plot for the next quiver plot
+                # Plot quiver plot
+                ax.quiver(x, y, u, v, angles='xy', scale_units='xy', scale=5, color='r')
+                ax.invert_yaxis()
+                ax.axis('off')
+                plt.savefig(os.path.join(output_dir, f'quiver_plot_{i:04d}.png'), bbox_inches='tight', pad_inches=0)
+            
+        for i in range(len(flow_vis_list)):
+            update_plot(i)
+            plt.cla()  # Clear the current plot for the next frame
+
+        plt.close(fig)
+
+    @staticmethod
+    def save_binary_original_overlap(original_image, binary_image, path=None):
+        overlay_image = np.zeros_like(original_image)
+        mask = binary_image > 0
+        overlay_image[mask] = original_image[mask]
+        plt.imshow(overlay_image, cmap='gray')
+        plt.axis('off')
+        plt.savefig(path, bbox_inches='tight', pad_inches=0)
+        plt.close()
+
+    @staticmethod
+    def save_synthetic_warp_pairs(img_list, warped_img_list, save_dir):
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+
+        for i in range(len(img_list)):
+            # Save the first image from img_list
+            img1 = FlowInitialization.convert_to_uint8(img_list[i])
+            img1_path = os.path.join(save_dir, f'image_{2 * i + 1:04d}.png')
+            Image.fromarray(img1).save(img1_path)
+
+            # Save the second image from warped_img_list if it exists
+            if i + 1 < len(warped_img_list):
+                img2 = FlowInitialization.convert_to_uint8(warped_img_list[i + 1])
+                img2_path = os.path.join(save_dir, f'image_{2 * i + 2:04d}.png')
+                Image.fromarray(img2).save(img2_path)
+    ##################################################
 
 class FlowAnalysis:
     def __init__(self, flow_vis_list):
