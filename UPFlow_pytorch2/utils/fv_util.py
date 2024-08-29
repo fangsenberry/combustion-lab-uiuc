@@ -17,6 +17,7 @@ from matplotlib.colors import ListedColormap
 import flow_viz
 import pickle
 import h5py
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 current_dir = Path(__file__).resolve()
 
@@ -56,26 +57,16 @@ class FlowConfig:
         return FlowConfig(**kwargs)
 
 class FlowInitialization:
-
     def __init__(self, config):
-        self.config = config #TODO: Add config
-        self.flow_vis_list = None
-        self.flow_vis_images = None
-        self.u_vectors = None
-        self.v_vectors = None
-        self.img_list = None
-        self.warped_img_list = None
-        self.gradient_list = None
-        self.binary_image_list = None
-        self.x=None
-        self.y=None
-
+        self.config = config
+        self.data = {}
 
     @staticmethod
     def save_to_hdf5(file_path, **kwargs):
         with h5py.File(file_path, 'w') as f:
             for key, value in kwargs.items():
-                f.create_dataset(key, data=value)
+                if value is not None:
+                    f.create_dataset(key, data=value)
 
     @staticmethod
     def load_from_hdf5(file_path):
@@ -84,9 +75,82 @@ class FlowInitialization:
             for key in f.keys():
                 data[key] = np.array(f[key])
         return data
+    
+    def plot_and_save_losses(self, loss_data_file=None, log_scale=True):
+        """
+        Plot and save loss curves for each specified loss in the data file.
+
+        Parameters:
+            loss_data_file (str): The name of the file containing the loss data. Defaults to 'loss_data.pkl' in the trial path.
+            log_scale (bool): If True, the y-axis will be plotted on a logarithmic scale. Default is True.
+        """
+        # Default loss data file if not provided
+        if loss_data_file is None:
+            loss_data_file = os.path.join(self.config.trial_path, 'loss_data.pkl')
+        
+        if not os.path.exists(loss_data_file):
+            print(f"Loss data could not be found for this trial path: {self.config.trial_path}")
+            return  # Exit the function if the file does not exist
+        
+        # Create folder to save the plots
+        folder_path = os.path.join(self.config.trial_path, 'loss_info')
+        os.makedirs(folder_path, exist_ok=True)
+
+        # Load loss data
+        with open(loss_data_file, 'rb') as f:
+            loaded_loss_data = pickle.load(f)
+
+        # Extract the keys dynamically
+        loss_keys = list(loaded_loss_data.keys())
+
+        # Initialize a list to accumulate valid loss data for total loss calculation
+        valid_loss_data = []
+
+        # Iterate over each loss type
+        for key in loss_keys:
+            losses = loaded_loss_data[key]
+
+            # Skip empty losses
+            if not losses:
+                continue
+
+            # Plot and save the loss curve
+            plt.figure(figsize=(10, 6))
+            plt.plot(losses, label=key)
+            plt.xlabel('Batch')
+            plt.ylabel(key)
+            if log_scale:
+                plt.yscale('log')
+            plt.title(f'{key} Over Time')
+            plt.legend()
+            # plt.grid(True)
+            plt.savefig(os.path.join(folder_path, f'{key}.png'))
+            # plt.show()
+
+            # Append to valid loss data for total loss calculation
+            valid_loss_data.append(losses)
+
+        # Calculate and plot total loss if there are valid losses
+        if valid_loss_data:
+            total_losses = [
+                sum(loss_tuple) for loss_tuple in zip(*valid_loss_data)
+            ]
+
+            if any(total_losses):  # Check if total_losses contains any non-zero values
+                plt.figure(figsize=(10, 6))
+                plt.plot(total_losses, label='total_loss')
+                plt.xlabel('Batch')
+                plt.ylabel('Total Loss')
+                if log_scale:
+                    plt.yscale('log')
+                plt.title('Total Loss Over Time')
+                plt.legend()
+                # plt.grid(True)
+                plt.savefig(os.path.join(folder_path, 'total_loss.png'))
+                # plt.show()
 
     def process_and_save_data(self):
-        self.flow_vis_list, self.img_list, self.warped_img_list, self.gradient_list, self.binary_image_list, self.x, self.y = self.create_flow_lists(
+        flow_vis_list, self.data['img_list'], self.data['warped_img_list'], self.data['gradient_list'], self.data['binary_image_list'], self.data['x'], self.data['y'] = self.create_flow_lists(
             self.config.trial_path, 
             self.config.img_path, 
             self.config.dir_ext, 
@@ -101,31 +165,15 @@ class FlowInitialization:
             custom_range=self.config.custom_range
         )
 
-        self.save_to_hdf5(
-            self.config.hdf5_path,
-            flow_vis_images=np.array(self.flow_vis_images, dtype=object),
-            u_vectors=np.array(self.u_vectors, dtype=object),
-            v_vectors=np.array(self.v_vectors, dtype=object),
-            img_list=np.array(self.img_list, dtype=object),
-            warped_img_list=np.array(self.warped_img_list, dtype=object),
-            gradient_list=np.array(self.gradient_list, dtype=object),
-            binary_image_list=np.array(self.binary_image_list, dtype=object),
-            x=np.array(self.x, dtype=object),
-            y=np.array(self.y, dtype=object)
-        )
+        self.data['flow_vis_images'] = [flow_vis for flow_vis, _, _ in flow_vis_list]
+        self.data['u_vectors'] = [u for _, u, _ in flow_vis_list]
+        self.data['v_vectors'] = [v for _, _, v in flow_vis_list]
+
+        self.save_to_hdf5(self.config.hdf5_path, **self.data)
 
     def load_data(self):
-        data = self.load_from_hdf5(self.config.hdf5_path)
-        self.flow_vis_images = data['flow_vis_images']
-        self.u_vectors = data['u_vectors']
-        self.v_vectors = data['v_vectors']
-        self.img_list = data['img_list']
-        self.warped_img_list = data['warped_img_list']
-        self.gradient_list = data['gradient_list']
-        self.binary_image_list = data['binary_image_list']
-        self.x = data['x']
-        self.y = data['y']
-    
+        self.data = self.load_from_hdf5(self.config.hdf5_path)
+
     @staticmethod
     def manual_crop(image, start_x=0, end_x=None, start_y=0, end_y=None):
         if image.ndim == 3:
@@ -153,7 +201,7 @@ class FlowInitialization:
             raise ValueError(f"Expected flow shape (2, {h}, {w}), but got {flow.shape}")
 
         x, y = np.meshgrid(np.arange(w), np.arange(h))
-        map_x, map_y = x - flow[0], y - flow[1]
+        map_x, map_y = x + flow[0], y + flow[1]
         coords = np.stack([map_y, map_x], axis=0)
 
         return warp(image, coords, mode='wrap', order=3)
@@ -184,11 +232,24 @@ class FlowInitialization:
 
     @staticmethod
     def save_heatmap_with_colorbar(heatmap, global_min, global_max, filename):
-        plt.figure(figsize=(10, 8))
-        plt.imshow(heatmap, cmap='coolwarm', vmin=global_min, vmax=global_max)
-        plt.colorbar(label='Gradient Intensity')
-        plt.axis('off')
-        plt.savefig(filename, bbox_inches='tight', pad_inches=0)
+        # Create a figure and axis
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        # Display the heatmap
+        img = ax.imshow(heatmap, cmap='coolwarm', vmin=global_min, vmax=global_max)
+        ax.axis('off')  # Turn off the axis for the heatmap
+
+        # Create an axis on the right side of the heatmap with the same height
+        divider = make_axes_locatable(ax)
+        cbar_ax = divider.append_axes("right", size="5%", pad=0.05)
+
+        # Add the colorbar to the new axis
+        cbar = plt.colorbar(img, cax=cbar_ax)
+        cbar.ax.tick_params(labelsize=8)  # Adjust the size of the color bar ticks
+        cbar.set_label('Gradient Intensity', size=8)
+        
+        # Save the figure
+        plt.savefig(filename, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
     @staticmethod
@@ -237,7 +298,7 @@ class FlowInitialization:
         return flow_vis, u, v
 
     @staticmethod
-    def plot_flow_vectors(flow_vis_list, img_list, binary_image_list, start_x=0, end_x=None, start_y=0, end_y=None, step=10):
+    def plot_flow_vectors(flow_vis_list, img_list, binary_image_list, x, y, start_x=0, end_x=None, start_y=0, end_y=None, step=10):
         for idx in range(len(flow_vis_list)):
             flow_vis, u, v = flow_vis_list[idx]
             original_img = img_list[idx]
@@ -270,7 +331,7 @@ class FlowInitialization:
             plt.show()
 
     @staticmethod
-    def plot_flow_vectors_as_video(flow_vis_list, img_list, binary_image_list, start_x=0, end_x=None, start_y=0, end_y=None, step=10, video_filename='flow_vectors.mp4'):
+    def plot_flow_vectors_as_video(flow_vis_list, img_list, binary_image_list, x, y, start_x=0, end_x=None, start_y=0, end_y=None, step=10, video_filename='flow_vectors.mp4'):
         fig, ax = plt.subplots(figsize=(10, 10))
 
         # Determine the cropping bounds for consistent plot size
@@ -362,7 +423,6 @@ class FlowInitialization:
 
         return flow
 
-    @staticmethod
     def create_flow_lists(self, directory, im_dir, base, step=10, start_y=0, end_y=None, start_x=0, end_x=None, reverse_flow=False, binary_image=False, warp=False, custom_range=25, flow_vis_type='basic'):
         flow_vis_list = []
         img_list = []
@@ -422,21 +482,19 @@ class FlowInitialization:
 
         return flow_vis_list, img_list, warped_img_list, gradient_list, binary_image_list, x, y
 
-    @staticmethod
-    def save_warped_images(warped_img_list, save_dir):
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
+    def save_warped_images(self, warped_img_list):
+        folder_path = os.path.join(self.config.trial_path, 'warped_images')
+        os.makedirs(folder_path, exist_ok=True)
 
         for i, warped_img in enumerate(warped_img_list):
             if warped_img.dtype != np.uint8:
                 warped_img = FlowInitialization.convert_to_uint8(warped_img)
-            img_path = os.path.join(save_dir, f'warped_image_{i:04d}.png')
+            img_path = os.path.join(folder_path, f'warped_image_{i}.png')
             Image.fromarray(warped_img).save(img_path)
 
-    @staticmethod
-    def generate_and_save_global_heatmaps(gradient_list, save_dir):
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
+    def generate_global_heatmaps(self, gradient_list):
+        folder_path = os.path.join(self.config.trial_path, 'gradient_heatmaps')
+        os.makedirs(folder_path, exist_ok=True)
 
         # Combine all gradients
         all_gradients = np.concatenate([gradient.flatten() for gradient in gradient_list])
@@ -445,20 +503,71 @@ class FlowInitialization:
         # Compute global min and max
         global_min = np.min(all_gradients)
         global_max = np.max(all_gradients)
-        print(f"Global min: {global_min}, Global max: {global_max}")
+        # print(f"Global min: {global_min}, Global max: {global_max}")
 
         # Compute average of absolute gradients
         average_absolute_gradient = np.mean(absolute_gradients)
-        print(f"Average of the absolute gradients: {average_absolute_gradient}")
+        # print(f"Average of the absolute gradients: {average_absolute_gradient}")
 
         # Generate and save heatmap images
         for i, gradient in enumerate(gradient_list):
             heatmap = FlowInitialization.gradient_to_heatmap(gradient, global_min, global_max)
-            filename = os.path.join(save_dir, f"gradient_{i:04d}.png")
+            filename = os.path.join(folder_path, f"gradient_{i}.png")
             FlowInitialization.save_heatmap_with_colorbar(heatmap, global_min, global_max, filename)
     
-    
-    def plot_and_save_flow(self, flow_vis_list, img_list, output_dir='output_directory', plot_type='flow_vis', fps=2, mask=False):
+    def average_heatmaps_with_confidence_intervals(self, gradient_list):
+        folder_path = os.path.join(self.config.trial_path, 'average_heatmaps_2D')
+        os.makedirs(folder_path, exist_ok=True)
+
+        # Calculate the mean and standard deviation per pixel across all frames
+        absolute_gradients = np.abs(np.array(gradient_list))
+        mean_error_per_pixel = np.mean(absolute_gradients, axis=0)
+        std_dev_per_pixel = np.std(absolute_gradients, axis=0)
+
+        # Calculate MSE and RMSE
+        mse_error_per_pixel = np.mean(absolute_gradients ** 2, axis=0)
+        overall_mse = np.mean(mse_error_per_pixel)
+        overall_rmse = np.sqrt(overall_mse)
+
+        # Save the 2D heatmap of the mean error
+        global_min = np.min(mean_error_per_pixel)
+        global_max = np.max(mean_error_per_pixel)
+        heatmap = self.gradient_to_heatmap(mean_error_per_pixel, global_min, global_max)
+        heatmap_filename = os.path.join(folder_path, "mean_error_heatmap.png")
+        self.save_heatmap_with_colorbar(heatmap, global_min, global_max, heatmap_filename)
+
+        # Overlay standard deviation contours on the heatmap
+        fig, ax = plt.subplots(figsize=(10, 8))
+        img = ax.imshow(mean_error_per_pixel, cmap='coolwarm', vmin=global_min, vmax=global_max)
+        ax.axis('off')
+        
+        # Overlay standard deviation as contours
+        contour_levels = np.linspace(np.min(std_dev_per_pixel), np.max(std_dev_per_pixel), 10)
+        cs = ax.contour(std_dev_per_pixel, levels=contour_levels, colors='black', linewidths=0.5)
+        ax.clabel(cs, inline=1, fontsize=8, fmt='%1.2f')
+
+        # Add colorbar for the mean error heatmap
+        divider = make_axes_locatable(ax)
+        cbar_ax = divider.append_axes("right", size="5%", pad=0.05)
+        cbar = plt.colorbar(img, cax=cbar_ax)
+        cbar.ax.tick_params(labelsize=8)
+        cbar.set_label('Gradient Intensity', size=8)
+        
+        # Save the figure with contours
+        overlay_filename = os.path.join(folder_path, "mean_error_with_std_contours.png")
+        plt.savefig(overlay_filename, bbox_inches='tight', pad_inches=0.1)
+        plt.close()
+
+        # Calculate and save the average error, standard deviation, MSE, and RMSE for the entire dataset
+        overall_mean_error = np.mean(mean_error_per_pixel)
+        overall_std_dev = np.mean(std_dev_per_pixel)
+        with open(os.path.join(self.config.trial_path, "error_metrics.txt"), "w") as f:
+            f.write(f"Average Error for the dataset: {overall_mean_error}\n")
+            f.write(f"Overall Standard Deviation for the dataset: {overall_std_dev}\n")
+            f.write(f"Overall MSE for the dataset: {overall_mse}\n")
+            f.write(f"Overall RMSE for the dataset: {overall_rmse}\n")
+
+    def plot_and_save_flow(self, flow_vis_list, img_list, x, y, output_dir='output_directory', plot_type='flow_vis', fps=2, mask=False):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
@@ -536,19 +645,20 @@ class FlowInitialization:
     ##################################################
 
 class FlowAnalysis:
-    def __init__(self, flow_vis_list):
+    def __init__(self, config, flow_vis_list):
         self.u_vectors, self.v_vectors = self.extract_flow_vectors(flow_vis_list)
         self.mean_u = None
         self.mean_v = None
         self.u_fluctuations = None
         self.v_fluctuations = None
+        self.config = config
 
     def extract_flow_vectors(self, flow_vis_list):
         u_vectors = []
         v_vectors = []
 
         for flow_vis in flow_vis_list:
-            _, _, _, u, v = flow_vis  # Assuming flow_vis_list contains tuples with flow vectors
+            _, u, v = flow_vis  # Assuming flow_vis_list contains tuples with flow vectors
             u_vectors.append(u)
             v_vectors.append(v)
         
@@ -562,28 +672,48 @@ class FlowAnalysis:
         rms_values = np.sqrt(np.mean(vectors**2, axis=0))
         return rms_values
 
-    def save_flow_vectors(self, save_dir):
-        os.makedirs(save_dir, exist_ok=True)
+    def save_flow_vectors(self):
+        # Create separate directories for u and v plots
+        u_dir = os.path.join(self.config.trial_path, 'UV_plots/u_plots')
+        v_dir = os.path.join(self.config.trial_path, 'UV_plots/v_plots')
+        os.makedirs(u_dir, exist_ok=True)
+        os.makedirs(v_dir, exist_ok=True)
 
+        # Determine global min and max for u and v vectors
+        u_min, u_max = float('inf'), float('-inf')
+        v_min, v_max = float('inf'), float('-inf')
+
+        for u, v in zip(self.u_vectors, self.v_vectors):
+            u_min = min(u_min, u.min())
+            u_max = max(u_max, u.max())
+            v_min = min(v_min, v.min())
+            v_max = max(v_max, v.max())
+
+        # Plot and save u and v vectors with consistent axis limits
         for idx, (u, v) in enumerate(zip(self.u_vectors, self.v_vectors)):
-            fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-            
             # Plot u vectors
-            im1 = ax[0].imshow(u, cmap='jet', aspect='auto')
-            ax[0].set_title(f'u vectors - Frame {idx}')
-            cbar1 = fig.colorbar(im1, ax=ax[0], orientation='vertical')
-            cbar1.set_label('Intensity')
+            fig_u, ax_u = plt.subplots(figsize=(6, 6))
+            im_u = ax_u.imshow(u, cmap='jet', aspect='auto', vmin=u_min, vmax=u_max)
+            ax_u.set_title(f'u vectors - Frame {idx}')
+            cbar_u = fig_u.colorbar(im_u, ax=ax_u, orientation='vertical')
+            cbar_u.set_label('Intensity')
+            
+            # Save u vector plot in u_plots directory
+            plt.tight_layout()
+            plt.savefig(os.path.join(u_dir, f'u_vectors_frame_{idx}.png'))
+            plt.close(fig_u)
 
             # Plot v vectors
-            im2 = ax[1].imshow(v, cmap='jet', aspect='auto')
-            ax[1].set_title(f'v vectors - Frame {idx}')
-            cbar2 = fig.colorbar(im2, ax=ax[1], orientation='vertical')
-            cbar2.set_label('Intensity')
-
-            # Save the figure
+            fig_v, ax_v = plt.subplots(figsize=(6, 6))
+            im_v = ax_v.imshow(v, cmap='jet', aspect='auto', vmin=v_min, vmax=v_max)
+            ax_v.set_title(f'v vectors - Frame {idx}')
+            cbar_v = fig_v.colorbar(im_v, ax=ax_v, orientation='vertical')
+            cbar_v.set_label('Intensity')
+            
+            # Save v vector plot in v_plots directory
             plt.tight_layout()
-            plt.savefig(os.path.join(save_dir, f'u_v_vectors_frame_{idx}.png'))
-            plt.close()
+            plt.savefig(os.path.join(v_dir, f'v_vectors_frame_{idx}.png'))
+            plt.close(fig_v)
 
     def compute_mean_velocities(self):
         self.mean_u = np.mean(self.u_vectors, axis=0)

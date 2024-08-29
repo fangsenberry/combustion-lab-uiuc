@@ -8,45 +8,101 @@ import numpy as np
 
 
 def conv(in_planes, out_planes, kernel_size=3, stride=1, dilation=1, isReLU=True, if_IN=False, IN_affine=False, if_BN=False):
-    if isReLU:
-        if if_IN:
-            return nn.Sequential(
-                nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
-                          padding=((kernel_size - 1) * dilation) // 2, bias=True),
-                nn.LeakyReLU(0.1, inplace=True),
-                nn.InstanceNorm2d(out_planes, affine=IN_affine)
-            )
-        elif if_BN:
-            return nn.Sequential(
-                nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
-                          padding=((kernel_size - 1) * dilation) // 2, bias=True),
-                nn.LeakyReLU(0.1, inplace=True),
-                nn.BatchNorm2d(out_planes, affine=IN_affine)
-            )
+    if kernel_size % 2 == 0:
+        padding = (0, 1, 0, 1)  # padding=(left, right, top, bottom)
+        if isReLU:
+            if if_IN:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=0, bias=True),  # No default padding in Conv2d
+                    # nn.ReflectionPad2d(padding),  # Apply asymmetric padding after the convolution
+                    nn.ReplicationPad2d(padding),
+                    nn.LeakyReLU(0.1, inplace=True),
+                    nn.InstanceNorm2d(out_planes, affine=IN_affine)
+                )
+            elif if_BN:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=0, bias=True),  # No default padding in Conv2d
+                    # nn.ReflectionPad2d(padding),  # Apply asymmetric padding after the convolution
+                    nn.ReplicationPad2d(padding),
+                    nn.LeakyReLU(0.1, inplace=True),
+                    nn.BatchNorm2d(out_planes, affine=IN_affine)
+                )
+            else:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=0, bias=True),  # No default padding in Conv2d
+                    # nn.ReflectionPad2d(padding),  # Apply asymmetric padding after the convolution
+                    nn.ReplicationPad2d(padding),
+                    nn.LeakyReLU(0.1, inplace=True)
+                )
         else:
-            return nn.Sequential(
-                nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
-                          padding=((kernel_size - 1) * dilation) // 2, bias=True),
-                nn.LeakyReLU(0.1, inplace=True)
-            )
+            if if_IN:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=0, bias=True),  # No default padding in Conv2d
+                    # nn.ReflectionPad2d(padding),  # Apply asymmetric padding after the convolution
+                    nn.ReplicationPad2d(padding),
+                    nn.InstanceNorm2d(out_planes, affine=IN_affine)
+                )
+            elif if_BN:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=0, bias=True),  # No default padding in Conv2d
+                    # nn.ReflectionPad2d(padding),  # Apply asymmetric padding after the convolution
+                    nn.ReplicationPad2d(padding),
+                    nn.BatchNorm2d(out_planes, affine=IN_affine)
+                )
+            else:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=0, bias=True),  # No default padding in Conv2d
+                    # nn.ReflectionPad2d(padding),  # Apply asymmetric padding after the convolution
+                    nn.ReplicationPad2d(padding),
+                )
     else:
-        if if_IN:
-            return nn.Sequential(
-                nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
-                          padding=((kernel_size - 1) * dilation) // 2, bias=True),
-                nn.InstanceNorm2d(out_planes, affine=IN_affine)
-            )
-        elif if_BN:
-            return nn.Sequential(
-                nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
-                          padding=((kernel_size - 1) * dilation) // 2, bias=True),
-                nn.BatchNorm2d(out_planes, affine=IN_affine)
-            )
+        padding = ((kernel_size - 1) * dilation) // 2
+        if isReLU:
+            if if_IN:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=padding, bias=True),
+                    nn.LeakyReLU(0.1, inplace=True),
+                    nn.InstanceNorm2d(out_planes, affine=IN_affine)
+                )
+            elif if_BN:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=padding, bias=True),
+                    nn.LeakyReLU(0.1, inplace=True),
+                    nn.BatchNorm2d(out_planes, affine=IN_affine)
+                )
+            else:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=padding, bias=True),
+                    nn.LeakyReLU(0.1, inplace=True)
+                )
         else:
-            return nn.Sequential(
-                nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
-                          padding=((kernel_size - 1) * dilation) // 2, bias=True)
-            )
+            if if_IN:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=padding, bias=True),
+                    nn.InstanceNorm2d(out_planes, affine=IN_affine)
+                )
+            elif if_BN:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=padding, bias=True),
+                    nn.BatchNorm2d(out_planes, affine=IN_affine)
+                )
+            else:
+                return nn.Sequential(
+                    nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, dilation=dilation,
+                            padding=padding, bias=True)
+                )
+    
 
 
 def initialize_msra(modules):
@@ -254,37 +310,38 @@ class FlowEstimatorDense(nn.Module):
 
 
 class FlowEstimatorDense_v2(nn.Module):
-    def __init__(self, ch_in, f_channels=(512, 256, 128, 64, 32), out_channel=2):
+    def __init__(self, ch_in, f_channels=(512, 256, 128, 64, 32), kernel=3, out_channel=2):
         super(FlowEstimatorDense_v2, self).__init__()
+        self.kernel = kernel  # Store the kernel size for reference
         N = 0
         ind = 0
         N += ch_in  # initial input channels
-        self.conv1 = conv(N, f_channels[ind])
+        self.conv1 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
         print(f'1st layer {N - f_channels[ind]}, {f_channels[ind]}')
 
         ind += 1
-        self.conv2 = conv(N, f_channels[ind])
+        self.conv2 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
         print(f'2nd layer {N - f_channels[ind]}, {f_channels[ind]}')
 
         ind += 1
-        self.conv3 = conv(N, f_channels[ind])
+        self.conv3 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
         print(f'3rd layer {N - f_channels[ind]}, {f_channels[ind]}')
 
         ind += 1
-        self.conv4 = conv(N, f_channels[ind])
+        self.conv4 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
         print(f'4th layer {N - f_channels[ind]}, {f_channels[ind]}')
 
         ind += 1
-        self.conv5 = conv(N, f_channels[ind])
+        self.conv5 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
         print(f'5th layer {N - f_channels[ind]}, {f_channels[ind]}')
         self.n_channels = N
         ind += 1
-        self.conv_last = conv(N, out_channel, isReLU=False)
+        self.conv_last = conv(N, out_channel, kernel_size=kernel, isReLU=False)
         print(f'last layer {N}, {out_channel}')
 
     def forward(self, x):

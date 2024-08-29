@@ -2,11 +2,11 @@ import pickle
 import matplotlib.pyplot as plt
 import os
 #create folder loss_info
-base_path = r'/home/caseyjo2/combustion-lab-uiuc/test_cases/UPF_A01_C_DP_35_trial_9'
+base_path = r'D:\test_cases\UPF_A01_C_DP_35_trial_24'
 folder_path = os.path.join(base_path, 'loss_info')
 os.makedirs(folder_path, exist_ok=True)
 
-with open(r'/home/caseyjo2/combustion-lab-uiuc/test_cases/UPF_A01_C_DP_35_trial_9/loss_data.pkl', 'rb') as f:
+with open(r'D:\test_cases\UPF_A01_C_DP_35_trial_24\loss_data.pkl', 'rb') as f:
     loaded_loss_data = pickle.load(f)
 
 smooth_losses = loaded_loss_data['smooth_loss']
@@ -26,9 +26,9 @@ def plot_losses(losses, title, ylabel):
     plt.title(title)
     plt.legend()
     plt.grid(True)
-    plt.show()
     #make a folder to save the plots
     plt.savefig(os.path.join(folder_path, f'{ylabel}.png'))
+    plt.show()
 
 # Plot each loss component
 plot_losses(smooth_losses, 'Smooth Loss Over Time', 'Smooth Loss')

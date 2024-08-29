@@ -23,32 +23,32 @@ class network_tools():
 
             class FlowEstimatorDense_temp(tools.abstract_model):
 
-                def __init__(self, ch_in, f_channels=(256, 128, 96, 64, 32), ch_out=2):
+                def __init__(self, ch_in, f_channels=(256, 128, 96, 64, 32), ch_out=2, kernel=2):
                     super(FlowEstimatorDense_temp, self).__init__()
                     N = 0
                     ind = 0
                     N += ch_in
-                    self.conv1 = conv(N, f_channels[ind])
+                    self.conv1 = conv(N, f_channels[ind], kernel_size=kernel)
                     N += f_channels[ind]
 
                     ind += 1
-                    self.conv2 = conv(N, f_channels[ind])
+                    self.conv2 = conv(N, f_channels[ind], kernel_size=kernel)
                     N += f_channels[ind]
 
                     ind += 1
-                    self.conv3 = conv(N, f_channels[ind])
+                    self.conv3 = conv(N, f_channels[ind], kernel_size=kernel)
                     N += f_channels[ind]
 
                     ind += 1
-                    self.conv4 = conv(N, f_channels[ind])
+                    self.conv4 = conv(N, f_channels[ind], kernel_size=kernel)
                     N += f_channels[ind]
 
                     ind += 1
-                    self.conv5 = conv(N, f_channels[ind])
+                    self.conv5 = conv(N, f_channels[ind], kernel_size=kernel)
                     N += f_channels[ind]
                     self.num_feature_channel = N
                     ind += 1
-                    self.conv_last = conv(N, ch_out, isReLU=False)
+                    self.conv_last = conv(N, ch_out, kernel_size=kernel, isReLU=False)
 
                 def forward(self, x):
                     x1 = torch.cat([self.conv1(x), x], dim=1)
@@ -62,11 +62,11 @@ class network_tools():
             f_channels_es = (32, 32, 32, 16, 8)
             in_C = 64
             self.warping_layer = WarpingLayer_no_div()
-            self.dense_estimator_mask = FlowEstimatorDense_temp(in_C, f_channels=f_channels_es, ch_out=3)
+            self.dense_estimator_mask = FlowEstimatorDense_temp(in_C, f_channels=f_channels_es, ch_out=3, kernel=3)
             self.upsample_output_conv = nn.Sequential(conv(1, 16, kernel_size=3, stride=1, dilation=1, if_BN=False, IN_affine=False),
-                                                      conv(16, 16, stride=2, if_BN=False, IN_affine=False),
+                                                      conv(16, 16, kernel_size=3, stride=2, if_BN=False, IN_affine=False),
                                                       conv(16, 32, kernel_size=3, stride=1, dilation=1, if_BN=False, IN_affine=False),
-                                                      conv(32, 32, stride=2, if_BN=False, IN_affine=False), )
+                                                      conv(32, 32, kernel_size=3, stride=2, if_BN=False, IN_affine=False), )
 
         def forward(self, flow_init, feature_1, feature_2, output_level_flow=None):
             n, c, h, w = flow_init.shape
@@ -280,11 +280,54 @@ class network_tools():
         # smooth_loss = dx.abs().mean() + dy.abs().mean()  # + dx2.abs().mean() + dxdy.abs().mean() + dydx.abs().mean() + dy2.abs().mean()
         # 暂时不上二阶的平滑损失，似乎加上以后就太猛了，无法降低photo loss TODO
         return smooth_loss
+    
+    @classmethod
+    def compute_gradient_magnitude(cls, image):
+        # Verify input shape
+        assert image.dim() == 4, f"Expected 4D input (batch_size, channels, height, width), but got {image.dim()}D"
+
+        # Sobel filters for detecting horizontal and vertical edges
+        sobel_x = torch.tensor([[[[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]]], dtype=torch.float32, device=image.device)
+        sobel_y = torch.tensor([[[[-1, -2, -1], [0, 0, 0], [1, 2, 1]]]], dtype=torch.float32, device=image.device)
+        
+        # Apply the Sobel filter to each channel separately
+        grad_magnitudes = []
+        for c in range(image.size(1)):  # Loop over channels
+            grad_x = F.conv2d(image[:, c:c+1, :, :], sobel_x, padding=1)
+            grad_y = F.conv2d(image[:, c:c+1, :, :], sobel_y, padding=1)
+            grad_magnitude = torch.sqrt(grad_x ** 2 + grad_y ** 2 + 1e-6)
+            grad_magnitudes.append(grad_magnitude)
+        
+        # Stack the gradient magnitudes to maintain the same number of channels
+        grad_magnitude = torch.cat(grad_magnitudes, dim=1)  # Combine along the channel dimension
+        
+        # Normalize the gradient magnitude to [0, 1]
+        grad_magnitude = (grad_magnitude - grad_magnitude.min()) / (grad_magnitude.max() - grad_magnitude.min() + 1e-6)
+        
+        return grad_magnitude
 
     @classmethod
-    def photo_loss_multi_type(cls, x, y, occ_mask, photo_loss_type='abs_robust',  # abs_robust, charbonnier,L1, SSIM
-                              photo_loss_delta=0.4, photo_loss_use_occ=False,
-                              ):
+    def gradient_x(cls, img, stride=1):
+        gx = img[:, :, :-stride, :] - img[:, :, stride:, :]
+        print(f'gx.shape = {gx.shape}')
+        return gx
+
+    @classmethod
+    def gradient_y(cls, img, stride=1):
+        gy = img[:, :, :, :-stride] - img[:, :, :, stride:]
+        print(f'gy.shape = {gy.shape}')
+        return gy
+
+    @classmethod
+    def compute_gradients(cls, img, stride=1):
+        grad_x = cls.gradient_x(img, stride)
+        grad_y = cls.gradient_y(img, stride)
+        return grad_x, grad_y
+    
+
+    @classmethod
+    def photo_loss_multi_type(cls, x, y, occ_mask, photo_loss_type='abs_robust',  
+                              photo_loss_delta=0.4, photo_loss_use_occ=False, photo_weighting=False):
         occ_weight = occ_mask
         if photo_loss_type == 'abs_robust':
             photo_diff = x - y
@@ -299,11 +342,29 @@ class network_tools():
             loss_diff, occ_weight = cls.weighted_ssim(x, y, occ_mask)
         else:
             raise ValueError('wrong photo_loss type: %s' % photo_loss_type)
+        
+        if photo_weighting:
+            grad_magnitude = cls.compute_gradient_magnitude(x)
+            
+            # Compute dark region weight (inverted normalized intensity)
+            dark_region_weight = 1.0 - (x / (x.max() + 1e-6))
+            
+            # Combine edge and dark region weights
+            combined_weight = grad_magnitude * dark_region_weight
+            
+            # Normalize the combined weight to prevent scaling the loss
+            combined_weight = combined_weight / (combined_weight.mean() + 1e-6)
+            
+            # Apply the combined weight to the photometric loss
+            loss_diff = loss_diff * combined_weight
 
+            # print('Photo loss weighted')
+        
         if photo_loss_use_occ:
             photo_loss = torch.sum(loss_diff * occ_weight) / (torch.sum(occ_weight) + 1e-6)
         else:
             photo_loss = torch.mean(loss_diff)
+        
         return photo_loss
 
 
@@ -340,6 +401,7 @@ class UPFlow_net(tools.abstract_model):
 
             self.if_sgu_upsample = False  # if use sgu upsampling
             self.if_use_cor_pytorch = False  # use my implementation of correlation layer by pytorch. only for test model in cpu(corr layer cuda is not compiled)
+            self.photo_weighting= False
 
         def __call__(self, ):
             # return PWCNet_unsup_irr_bi_v5_4(self)
@@ -349,7 +411,29 @@ class UPFlow_net(tools.abstract_model):
         super(UPFlow_net, self).__init__()
         # === get config file
         self.conf = conf
-
+        self.photo_weighting= self.conf.photo_weighting
+        ##################### Old version of the network #####################
+        # self.search_range = 4
+        # self.num_chs = [1, 16, 32, 64, 96, 128, 196]
+        # #                  1/2 1/4 1/8 1/16 1/32 1/64
+        # self.estimator_f_channels = (128, 128, 96, 64, 32)
+        # self.context_f_channels = (128, 128, 128, 96, 64, 32, 2)
+        # self.output_level = 4
+        # self.num_levels = 7
+        # self.leakyRELU = nn.LeakyReLU(0.1, inplace=True)
+        # self.feature_pyramid_extractor = FeatureExtractor(self.num_chs)
+        # self.warping_layer = WarpingLayer_no_div()
+        # self.dim_corr = (self.search_range * 2 + 1) ** 2
+        # self.num_ch_in = self.dim_corr + 32 + 2
+        # self.flow_estimators = FlowEstimatorDense_v2(self.num_ch_in, f_channels=self.estimator_f_channels, kernel=2)
+        # self.context_networks = ContextNetwork_v2_(self.flow_estimators.n_channels + 2, f_channels=self.context_f_channels)
+        # self.conv_1x1 = nn.ModuleList([conv(196, 32, kernel_size=1, stride=1, dilation=1),
+        #                                conv(128, 32, kernel_size=1, stride=1, dilation=1),
+        #                                conv(96, 32, kernel_size=1, stride=1, dilation=1),
+        #                                conv(64, 32, kernel_size=1, stride=1, dilation=1),
+        #                                conv(32, 32, kernel_size=1, stride=1, dilation=1)])
+        
+        ######################################################################
         # === build the network
         self.search_range = 4
         self.num_chs = [1, 16, 32, 64, 96, 128, 256]
@@ -363,13 +447,14 @@ class UPFlow_net(tools.abstract_model):
         self.warping_layer = WarpingLayer_no_div()
         self.dim_corr = (self.search_range * 2 + 1) ** 2
         self.num_ch_in = self.dim_corr + 32 + 2
-        self.flow_estimators = FlowEstimatorDense_v2(self.num_ch_in, f_channels=self.estimator_f_channels)
+        self.flow_estimators = FlowEstimatorDense_v2(self.num_ch_in, f_channels=self.estimator_f_channels, kernel=3)
         self.context_networks = ContextNetwork_v2_(self.flow_estimators.n_channels + 2, f_channels=self.context_f_channels)
         self.conv_1x1 = nn.ModuleList([conv(256, 32, kernel_size=1, stride=1, dilation=1),
                                        conv(128, 32, kernel_size=1, stride=1, dilation=1),
                                        conv(96, 32, kernel_size=1, stride=1, dilation=1),
                                        conv(64, 32, kernel_size=1, stride=1, dilation=1),
                                        conv(32, 32, kernel_size=1, stride=1, dilation=1)])
+        ########################################################################################
         self.occ_check_model_ls = []
         self.correlation_pytorch = Corr_pyTorch(pad_size=self.search_range, kernel_size=1,
                                                 max_displacement=self.search_range, stride1=1, stride2=1)  # correlation layer using pytorch
@@ -460,9 +545,9 @@ class UPFlow_net(tools.abstract_model):
             if self.conf.stop_occ_gradient:
                 occ_fw, occ_bw = occ_fw.clone().detach(), occ_bw.clone().detach()
             photo_loss = network_tools.photo_loss_multi_type(im1_ori, im1_warp, occ_fw, photo_loss_type=self.conf.photo_loss_type,
-                                                             photo_loss_delta=self.conf.photo_loss_delta, photo_loss_use_occ=self.conf.photo_loss_use_occ)
+                                                             photo_loss_delta=self.conf.photo_loss_delta, photo_loss_use_occ=self.conf.photo_loss_use_occ, photo_weighting=self.photo_weighting)
             photo_loss += network_tools.photo_loss_multi_type(im2_ori, im2_warp, occ_bw, photo_loss_type=self.conf.photo_loss_type,
-                                                              photo_loss_delta=self.conf.photo_loss_delta, photo_loss_use_occ=self.conf.photo_loss_use_occ)
+                                                              photo_loss_delta=self.conf.photo_loss_delta, photo_loss_use_occ=self.conf.photo_loss_use_occ, photo_weighting=self.photo_weighting)
             output_dict['photo_loss'] = photo_loss
             output_dict['im1_warp'] = im1_warp
             output_dict['im2_warp'] = im2_warp
@@ -499,10 +584,10 @@ class UPFlow_net(tools.abstract_model):
                     else:
                         raise ValueError('wrong multi_scale_distillation_style: %s' % self.conf.multi_scale_distillation_style)
                     msd_loss_scale_fw = network_tools.photo_loss_multi_type(x=scale_fw, y=flow_fw_label_sacle, occ_mask=occ_scale_fw, photo_loss_type='abs_robust',
-                                                                            photo_loss_use_occ=self.conf.multi_scale_distillation_occ)
+                                                                            photo_loss_use_occ=self.conf.multi_scale_distillation_occ, photo_weighting=self.photo_weighting)
                     msd_loss_ls.append(msd_loss_scale_fw)
                     msd_loss_scale_bw = network_tools.photo_loss_multi_type(x=scale_bw, y=flow_bw_label_sacle, occ_mask=occ_scale_bw, photo_loss_type='abs_robust',
-                                                                            photo_loss_use_occ=self.conf.multi_scale_distillation_occ)
+                                                                            photo_loss_use_occ=self.conf.multi_scale_distillation_occ, photo_weighting=self.photo_weighting)
                     msd_loss_ls.append(msd_loss_scale_bw)
                 msd_loss = sum(msd_loss_ls)
                 msd_loss = self.conf.multi_scale_distillation_weight * msd_loss

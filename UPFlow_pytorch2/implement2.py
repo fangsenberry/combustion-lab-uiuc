@@ -32,13 +32,14 @@ class RandomHorizontalFlip:
         return img1, img2
 
 class CustomFlowDataset(Dataset):
-    def __init__(self, root_dir, transform=None, augmentations=None, target_mean=0.5, crop_size=(140, 400), num_crops_per_image=3):
+    def __init__(self, root_dir, transform=None, augmentations=None, target_mean=0.5, crop_size=(140, 400), num_crops_per_image=3, divide_into_regions=False):
         self.root_dir = root_dir
         self.transform = transform if transform else transforms.Compose([transforms.ToTensor()])
         self.augmentations = augmentations
         self.target_mean = target_mean
         self.crop_size = crop_size
         self.num_crops_per_image = num_crops_per_image
+        self.divide_into_regions = divide_into_regions
         self.image_pairs = self._load_image_pairs()
 
     def _load_image_pairs(self):
@@ -60,6 +61,8 @@ class CustomFlowDataset(Dataset):
 
     def __getitem__(self, idx):
         actual_idx = idx // self.num_crops_per_image
+        region_idx = idx % 4  # Assuming 4 regions
+
         img1_path, img2_path = self.image_pairs[actual_idx]
         img1 = io.imread(img1_path)
         img2 = io.imread(img2_path)
@@ -70,12 +73,14 @@ class CustomFlowDataset(Dataset):
         if len(img2.shape) == 3:
             img2 = img2[:, :, 0]
 
+        # Random cropping
         img1, img2 = self.random_crop(img1, img2)
         
         # Normalize to [0, 1] range
         img1 = img_as_float32(img1)
         img2 = img_as_float32(img2)
 
+        # Adjust mean intensity if target_mean is provided
         if self.target_mean is not None:
             img1 = img1 - img1.mean() + self.target_mean
             img2 = img2 - img2.mean() + self.target_mean
@@ -84,16 +89,37 @@ class CustomFlowDataset(Dataset):
         img1 = np.ascontiguousarray(img1)
         img2 = np.ascontiguousarray(img2)
 
-        # Apply augmentations if any
-        if self.augmentations:
-            img1, img2 = self.augmentations(img1, img2)
+        if self.divide_into_regions:
+            # Divide each image into four regions
+            regions_img1 = self.divide_into_regions_method(img1)
+            regions_img2 = self.divide_into_regions_method(img2)
 
-        # Normalize each image pair individually using the transform
-        if self.transform:
-            img1 = self.transform(img1)
-            img2 = self.transform(img2)
+            # Select the specific region to return based on region_idx
+            region_img1 = regions_img1[region_idx]
+            region_img2 = regions_img2[region_idx]
 
-        return img1, img2
+            # Upsample the selected region
+            upsampled_img1 = self.upsample_region(region_img1)
+            upsampled_img2 = self.upsample_region(region_img2)
+            
+            if self.augmentations:
+                upsampled_img1, upsampled_img2 = self.augmentations(upsampled_img1, upsampled_img2)
+            if self.transform:
+                upsampled_img1 = self.transform(upsampled_img1)
+                upsampled_img2 = self.transform(upsampled_img2)
+
+            return upsampled_img1, upsampled_img2  # Return only one pair of the selected region
+
+        else:
+            # Process the entire image without upsampling
+            if self.augmentations:
+                img1, img2 = self.augmentations(img1, img2)
+
+            if self.transform:
+                img1 = self.transform(img1)
+                img2 = self.transform(img2)
+
+            return img1, img2  # Single image pair
 
     def random_crop(self, img1, img2):
         if self.crop_size is None:
@@ -109,6 +135,18 @@ class CustomFlowDataset(Dataset):
             img2 = img2[top: top + new_h, left: left + new_w]
 
             return img1, img2
+
+    def divide_into_regions_method(self, img):
+        h, w = img.shape
+        upper_left = img[0:h//2, 0:w//2]
+        upper_right = img[0:h//2, w//2:w]
+        lower_left = img[h//2:h, 0:w//2]
+        lower_right = img[h//2:h, w//2:w]
+        return [upper_left, upper_right, lower_left, lower_right]
+
+    def upsample_region(self, region):
+        h, w = region.shape
+        return cv2.resize(region, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
 
 class Loss_manager:
     def __init__(self):
@@ -341,28 +379,28 @@ class Trainer:
     def load_training_dataset(self, root_dir):
         augmentations = ComposePairs([RandomHorizontalFlip(p=0.2)])
         transform = transforms.Compose([transforms.ToTensor()])
-        dataset = CustomFlowDataset(root_dir, transform=transform, augmentations=None, target_mean=0.5, crop_size=None, num_crops_per_image=1)
+        dataset = CustomFlowDataset(root_dir, transform=transform, augmentations=None, target_mean=0.5, crop_size=None, num_crops_per_image=4, divide_into_regions=True)
         return dataset
 
 if __name__ == "__main__":
     # Training parameters
-    experiment_name = "UPF_A01_C_DP_35_trial_16"
+    experiment_name = "UPF_A01_C_DP_35_trial_27"
 
     # Training parameters
     training_param = {
-        'exp_dir': os.path.join(r"/home/caseyjo2/combustion-lab-uiuc/test_cases", experiment_name),  # Use the base name for exp_dir
-        'batchsize': 4,
+        'exp_dir': os.path.join(r"D:\test_cases", experiment_name),  # Use the base name for exp_dir
+        'batchsize': 12,
         'NUM_WORKERS': 16,
-        'n_epoch': 50,
+        'n_epoch': 25,
         'batch_per_epoch': 500,
         'batch_per_print': 25,
-        'lr': 1e-4,
-        'weight_decay': 1e-8,
+        'lr': 2e-4,
+        'weight_decay': 1e-4,
         'scheduler_gamma': 1,
         'model_save_path': f'{experiment_name}.pth'  # Use the base name for model_save_path
     }
-    pretrain_path = None  # Add the path to the pretrained model if needed
-    root_dir = r"/home/caseyjo2/combustion-lab-uiuc/data/noisy_images_preprocessed/A01_C_DP_35.0/512_edges/"
+    pretrain_path =r"D:\test_cases\UPF_A01_C_DP_35_trial_26\UPF_A01_C_DP_35_trial_26.pth"  # Add the path to the pretrained model if needed
+    root_dir = r"D:\contrast_adjusted_512-complex"
     
     param_dict = {
         'occ_type': 'for_back_check',
@@ -376,19 +414,20 @@ if __name__ == "__main__":
         'smooth_order_2_weight': 1e-12,
         'photo_loss_type': 'abs_robust',
         'photo_loss_delta': 0.4,
-        'photo_loss_use_occ': False,
+        'photo_loss_use_occ': True,
         'photo_loss_census_weight': 0.5,
         'if_norm_before_cost_volume': True,
         'norm_moments_across_channels': False,
         'norm_moments_across_images': False,
         'multi_scale_distillation_weight': 0.01,
         'multi_scale_distillation_style': 'upup',
-        'multi_scale_distillation_occ': False,
+        'multi_scale_distillation_occ': True,
         'if_froze_pwc': False,
         'input_or_sp_input': 1,
         'if_use_boundary_warp': True,
         'if_sgu_upsample': True,  # if use sgu upsampling
         'if_use_cor_pytorch': False,
+        'photo_weighting': False,
     }
     
     conf = Config(**training_param)
