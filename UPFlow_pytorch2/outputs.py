@@ -13,7 +13,7 @@ import pandas as pd
 def main():
     # Define your experiment parameters
     config = FlowConfig(
-        trial_path=r"D:\test_cases\UPF_A01_C_DP_35_trial_33",
+        trial_path=r"D:\test_cases\UPF_A01_C_DP_35_trial_35",
         img_path=r"D:\final_corrected_512-complex-27-6-24.pth_inference",
         dir_ext=r'flow_npy\result_',
         step=1,
@@ -24,7 +24,7 @@ def main():
         reverse_flow=False,
         binary_image_analysis=True,
         warp_analysis=True,
-        custom_range=35,
+        custom_range='end',
         hdf5_path='flow_data.h5'
     )
     
@@ -33,7 +33,7 @@ def main():
     
     try:
         # Process the data and save to HDF5 (uncomment if needed)
-        # flow_analysis.process_and_save_data()
+        flow_analysis.process_and_save_data()
         
         # Optionally, load the data back from HDF5 (uncomment if needed)
         # loaded_data = Fizi.load_from_hdf5(config.hdf5_path)
@@ -42,28 +42,28 @@ def main():
         # Prepare directories and lists for warped images
         
         # Generate flow lists and save warped images
-        flow_vis_list, img_list, warped_img_list, gradient_list, binary_image_list, x, y = flow_analysis.create_flow_lists(
-            config.trial_path, 
-            config.img_path, 
-            config.dir_ext, 
-            step=config.step, 
-            start_x=config.start_x, 
-            warp=config.warp_analysis, 
-            binary_image=config.binary_image_analysis,
-            custom_range=config.custom_range
-        )
-        # flow_analysis.plot_and_save_losses()
-        # flow_analysis.generate_global_heatmaps(gradient_list)
-        # flow_analysis.average_heatmaps_with_confidence_intervals(gradient_list)
-        # flow_analysis.save_warped_images(warped_img_list)
-        flow_extraction=Flay(config, flow_vis_list, binary_image_list)
-        # flow_extraction.save_flow_vectors()
-        flow_extraction.plot_vorticity(save_dir=config.trial_path, save_data='vorticity')
-        # Plot shear stress
-        flow_extraction.plot_shear_stress(save_dir=config.trial_path, save_data='shear_stress')
+        # flow_vis_list, img_list, warped_img_list, gradient_list, binary_image_list, x, y = flow_analysis.create_flow_lists(
+        #     config.trial_path, 
+        #     config.img_path, 
+        #     config.dir_ext, 
+        #     step=config.step, 
+        #     start_x=config.start_x, 
+        #     warp=config.warp_analysis, 
+        #     binary_image=config.binary_image_analysis,
+        #     custom_range=config.custom_range
+        # )
+        # # flow_analysis.plot_and_save_losses()
+        # # flow_analysis.generate_global_heatmaps(gradient_list)
+        # # flow_analysis.average_heatmaps_with_confidence_intervals(gradient_list)
+        # # flow_analysis.save_warped_images(warped_img_list)
+        # flow_extraction=Flay(config, flow_vis_list, binary_image_list)
+        # # flow_extraction.save_flow_vectors()
+        # flow_extraction.plot_vorticity(save_dir=config.trial_path, save_data='vorticity')
+        # # Plot shear stress
+        # flow_extraction.plot_shear_stress(save_dir=config.trial_path, save_data='shear_stress')
 
-        # Plot strain rate
-        flow_extraction.plot_strain_rate(save_dir=config.trial_path, save_data='strain_rate')
+        # # Plot strain rate
+        # flow_extraction.plot_strain_rate(save_dir=config.trial_path, save_data='strain_rate')
 
 
     except Exception as e:
