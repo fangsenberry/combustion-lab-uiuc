@@ -40,61 +40,61 @@ class NoisyImageDataset(Dataset):
         return noisy_image, image, mask  # Input is the masked image, target is the original image, mask is the masked positions
 
 # Define the denoising CNN model
-# class DenoisingCNN(nn.Module):
-#     def __init__(self, num_features=256):
-#         print(f"init model with {num_features} features")
-#         super(DenoisingCNN, self).__init__()
-#         self.encoder = nn.Sequential(
-#             nn.Conv2d(1, num_features, kernel_size=3, padding=1),
-#             nn.ReLU(),
-#             nn.Conv2d(num_features, num_features, kernel_size=3, padding=1),
-#             nn.ReLU(),
-#             nn.MaxPool2d(2)
-#         )
-#         self.decoder = nn.Sequential(
-#             nn.ConvTranspose2d(num_features, num_features, kernel_size=2, stride=2),
-#             nn.ReLU(),
-#             nn.Conv2d(num_features, 1, kernel_size=3, padding=1),
-#             nn.Sigmoid()
-#         )
-
-#     def forward(self, x):
-#         x = self.encoder(x)  # Pass the input through the encoder
-#         x = self.decoder(x)  # Pass the encoded output through the decoder
-#         return x             # Return the decoded output
-
 class DenoisingCNN(nn.Module):
     def __init__(self, num_features=256):
-        print(f"init model with arg: {num_features}")
+        print(f"init model with {num_features} features")
         super(DenoisingCNN, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, num_features, kernel_size=3, padding=1),  # Output: (num_features, H, W)
-            nn.BatchNorm2d(num_features),
+            nn.Conv2d(1, num_features, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(num_features, num_features, kernel_size=3, padding=1),  # Output: (num_features, H, W)
-            nn.BatchNorm2d(num_features),
+            nn.Conv2d(num_features, num_features, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2),  # Output: (num_features, H/2, W/2)
-            nn.Conv2d(num_features, num_features*2, kernel_size=3, padding=1),  # Output: (num_features*2, H/2, W/2)
-            nn.BatchNorm2d(num_features*2),
-            nn.ReLU(),
-            nn.MaxPool2d(2)  # Output: (num_features*2, H/4, W/4)
+            nn.MaxPool2d(2)
         )
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(num_features*2, num_features, kernel_size=2, stride=2),  # Output: (num_features, H/2, W/2)
-            nn.BatchNorm2d(num_features),
+            nn.ConvTranspose2d(num_features, num_features, kernel_size=2, stride=2),
             nn.ReLU(),
-            nn.ConvTranspose2d(num_features, num_features, kernel_size=2, stride=2),  # Output: (num_features, H, W)
-            nn.BatchNorm2d(num_features),
-            nn.ReLU(),
-            nn.Conv2d(num_features, 1, kernel_size=3, padding=1),  # Output: (1, H, W)
+            nn.Conv2d(num_features, 1, kernel_size=3, padding=1),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        x = self.encoder(x)  # Pass the input through the encoder
+        x = self.decoder(x)  # Pass the encoded output through the decoder
+        return x             # Return the decoded output
+
+# class DenoisingCNN(nn.Module):
+#     def __init__(self, num_features=256):
+#         print(f"init model with arg: {num_features}")
+#         super(DenoisingCNN, self).__init__()
+#         self.encoder = nn.Sequential(
+#             nn.Conv2d(1, num_features, kernel_size=3, padding=1),  # Output: (num_features, H, W)
+#             nn.BatchNorm2d(num_features),
+#             nn.ReLU(),
+#             nn.Conv2d(num_features, num_features, kernel_size=3, padding=1),  # Output: (num_features, H, W)
+#             nn.BatchNorm2d(num_features),
+#             nn.ReLU(),
+#             nn.MaxPool2d(2),  # Output: (num_features, H/2, W/2)
+#             nn.Conv2d(num_features, num_features*2, kernel_size=3, padding=1),  # Output: (num_features*2, H/2, W/2)
+#             nn.BatchNorm2d(num_features*2),
+#             nn.ReLU(),
+#             nn.MaxPool2d(2)  # Output: (num_features*2, H/4, W/4)
+#         )
+#         self.decoder = nn.Sequential(
+#             nn.ConvTranspose2d(num_features*2, num_features, kernel_size=2, stride=2),  # Output: (num_features, H/2, W/2)
+#             nn.BatchNorm2d(num_features),
+#             nn.ReLU(),
+#             nn.ConvTranspose2d(num_features, num_features, kernel_size=2, stride=2),  # Output: (num_features, H, W)
+#             nn.BatchNorm2d(num_features),
+#             nn.ReLU(),
+#             nn.Conv2d(num_features, 1, kernel_size=3, padding=1),  # Output: (1, H, W)
+#             nn.Sigmoid()
+#         )
+
+#     def forward(self, x):
+#         x = self.encoder(x)
+#         x = self.decoder(x)
+#         return x
 
 def train_denoiser(image_dir, models_dir, model_base, model_save_path, num_epochs=50, batch_size=16, learning_rate=0.001, num_features=256, device_ids=None):
     # Setup device
@@ -184,8 +184,8 @@ def train_denoiser(image_dir, models_dir, model_base, model_save_path, num_epoch
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.10f}, Current Learning Rate: {optimizer.param_groups[0]['lr']}, Total Train Time Elapsed: {elapsed_minutes}m {elapsed_seconds}s, Estimated Time Remaining for Train: {remaining_minutes}m {remaining_seconds}s.")
 
     # Save the model
-    torch.save(model.state_dict(), model_save_path)
-    print(f"Model saved to {model_save_path}")
+    # torch.save(model.state_dict(), model_save_path)
+    # print(f"Model saved to {model_save_path}")
 
     # Save the training losses to a CSV file
     losses_file_path = os.path.join(models_dir, f'training_losses_{model_base}.csv')

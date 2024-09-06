@@ -4,7 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 # from torch.nn.utils.spectral_norm import spectral_norm
-from model.pwc_modules import conv, initialize_msra, upsample2d_flow_as, upsample_flow, FlowEstimatorDense_v2, ContextNetwork_v2_, OccEstimatorDense, OccContextNetwork
+from model.pwc_modules import (
+    conv, initialize_msra, upsample2d_flow_as, upsample_flow, 
+    FlowEstimatorDense_v2, ContextNetwork_v2_, OccEstimatorDense, 
+    OccContextNetwork, FuelAttentionModule, FuelAttentionModule_v2
+)
 from model.pwc_modules import WarpingLayer_no_div, FeatureExtractor
 from model.correlation_package.correlation import Correlation
 import numpy as np
@@ -14,6 +18,7 @@ from utils.pytorch_correlation import Corr_pyTorch
 import cv2
 import os
 import math
+import matplotlib.pyplot as plt
 
 
 class network_tools():
@@ -402,6 +407,7 @@ class UPFlow_net(tools.abstract_model):
             self.if_sgu_upsample = False  # if use sgu upsampling
             self.if_use_cor_pytorch = False  # use my implementation of correlation layer by pytorch. only for test model in cpu(corr layer cuda is not compiled)
             self.photo_weighting= False
+            self.if_attention_mechanism= False
 
         def __call__(self, ):
             # return PWCNet_unsup_irr_bi_v5_4(self)
@@ -412,34 +418,15 @@ class UPFlow_net(tools.abstract_model):
         # === get config file
         self.conf = conf
         self.photo_weighting= self.conf.photo_weighting
+        self.if_attention_mechanism=self.conf.if_attention_mechanism
         ##################### Old version of the network #####################
-        # self.search_range = 4
-        # self.num_chs = [1, 16, 32, 64, 96, 128, 196]
-        # #                  1/2 1/4 1/8 1/16 1/32 1/64
-        # self.estimator_f_channels = (128, 128, 96, 64, 32)
-        # self.context_f_channels = (128, 128, 128, 96, 64, 32, 2)
-        # self.output_level = 4
-        # self.num_levels = 7
-        # self.leakyRELU = nn.LeakyReLU(0.1, inplace=True)
-        # self.feature_pyramid_extractor = FeatureExtractor(self.num_chs)
-        # self.warping_layer = WarpingLayer_no_div()
-        # self.dim_corr = (self.search_range * 2 + 1) ** 2
-        # self.num_ch_in = self.dim_corr + 32 + 2
-        # self.flow_estimators = FlowEstimatorDense_v2(self.num_ch_in, f_channels=self.estimator_f_channels, kernel=2)
-        # self.context_networks = ContextNetwork_v2_(self.flow_estimators.n_channels + 2, f_channels=self.context_f_channels)
-        # self.conv_1x1 = nn.ModuleList([conv(196, 32, kernel_size=1, stride=1, dilation=1),
-        #                                conv(128, 32, kernel_size=1, stride=1, dilation=1),
-        #                                conv(96, 32, kernel_size=1, stride=1, dilation=1),
-        #                                conv(64, 32, kernel_size=1, stride=1, dilation=1),
-        #                                conv(32, 32, kernel_size=1, stride=1, dilation=1)])
-        
-        ######################################################################
-        # === build the network
         self.search_range = 4
-        self.num_chs = [1, 16, 32, 64, 96, 128, 256]
+        self.num_chs = [1, 16, 32, 64, 96, 128, 196]
         #                  1/2 1/4 1/8 1/16 1/32 1/64
-        self.estimator_f_channels = (512, 256, 128, 96, 64)
-        self.context_f_channels = (512, 256, 256, 128, 96, 64, 2)
+        self.estimator_f_channels = (128, 128, 96, 64, 32)
+        self.context_f_channels = (128, 128, 128, 96, 64, 32, 2)
+        self.attention_f_channels = (128, 128, 64, 32)
+        self.attention_f_channels2 = [96, 128, 160, 196]
         self.output_level = 4
         self.num_levels = 7
         self.leakyRELU = nn.LeakyReLU(0.1, inplace=True)
@@ -449,15 +436,41 @@ class UPFlow_net(tools.abstract_model):
         self.num_ch_in = self.dim_corr + 32 + 2
         self.flow_estimators = FlowEstimatorDense_v2(self.num_ch_in, f_channels=self.estimator_f_channels, kernel=3)
         self.context_networks = ContextNetwork_v2_(self.flow_estimators.n_channels + 2, f_channels=self.context_f_channels)
-        self.conv_1x1 = nn.ModuleList([conv(256, 32, kernel_size=1, stride=1, dilation=1),
+        self.conv_1x1 = nn.ModuleList([conv(196, 32, kernel_size=1, stride=1, dilation=1),
                                        conv(128, 32, kernel_size=1, stride=1, dilation=1),
                                        conv(96, 32, kernel_size=1, stride=1, dilation=1),
                                        conv(64, 32, kernel_size=1, stride=1, dilation=1),
                                        conv(32, 32, kernel_size=1, stride=1, dilation=1)])
+        
+        ######################################################################
+        # === build the network
+        # self.search_range = 4
+        # self.num_chs = [1, 16, 32, 64, 96, 128, 256]
+        # #                  1/2 1/4 1/8 1/16 1/32 1/64
+        # self.estimator_f_channels = (512, 256, 128, 96, 64)
+        # self.context_f_channels = (512, 256, 256, 128, 96, 64, 2)
+        # self.attention_f_channels = (128, 128, 64, 32)
+        # self.output_level = 4
+        # self.num_levels = 7
+        # self.leakyRELU = nn.LeakyReLU(0.1, inplace=True)
+        # self.feature_pyramid_extractor = FeatureExtractor(self.num_chs)
+        # self.warping_layer = WarpingLayer_no_div()
+        # self.dim_corr = (self.search_range * 2 + 1) ** 2
+        # self.num_ch_in = self.dim_corr + 32 + 2
+        # self.flow_estimators = FlowEstimatorDense_v2(self.num_ch_in, f_channels=self.estimator_f_channels, kernel=2)
+        # self.context_networks = ContextNetwork_v2_(self.flow_estimators.n_channels + 2, f_channels=self.context_f_channels)
+        # self.conv_1x1 = nn.ModuleList([conv(256, 32, kernel_size=1, stride=1, dilation=1),
+        #                                conv(128, 32, kernel_size=1, stride=1, dilation=1),
+        #                                conv(96, 32, kernel_size=1, stride=1, dilation=1),
+        #                                conv(64, 32, kernel_size=1, stride=1, dilation=1),
+        #                                conv(32, 32, kernel_size=1, stride=1, dilation=1)])
         ########################################################################################
         self.occ_check_model_ls = []
         self.correlation_pytorch = Corr_pyTorch(pad_size=self.search_range, kernel_size=1,
                                                 max_displacement=self.search_range, stride1=1, stride2=1)  # correlation layer using pytorch
+        # === Attention module integrated ===
+        self.fuel_attention = FuelAttentionModule(ch_in=196, f_channels=self.attention_f_channels2)  # Set channel=1 if on raw data, channel=196 if after feature extractor, channel=32 if after SGU
+
         # === build sgu upsampling
         if self.conf.if_sgu_upsample:
             self.sgi_model = network_tools.sgu_model()
@@ -494,8 +507,11 @@ class UPFlow_net(tools.abstract_model):
         output_dict['flow_b_out'] = flow_b_pwc_out
         output_dict['occ_fw'] = occ_fw
         output_dict['occ_bw'] = occ_bw
-        output_dict['interpolation_flow'] = inter_flows
-        output_dict['interpolation_map'] = inter_maps
+        # Only add interpolation_flow and interpolation_map if they are not None
+        if inter_flows is not None:
+            output_dict['interpolation_flow'] = inter_flows
+        if inter_maps is not None:
+            output_dict['interpolation_map'] = inter_maps
 
         if input_dict['if_loss']:
             # === smooth loss
@@ -600,8 +616,16 @@ class UPFlow_net(tools.abstract_model):
     def forward_2_frame_v3(self, x1_raw, x2_raw, if_loss=False):
         _, _, height_im, width_im = x1_raw.size()
         # on the bottom level are original images
+        # if self.conf.if_attention_mechanism:
+        #     x1_raw = self.fuel_attention(x1_raw)
+        #     x2_raw = self.fuel_attention(x2_raw)
         x1_pyramid = self.feature_pyramid_extractor(x1_raw) + [x1_raw]
         x2_pyramid = self.feature_pyramid_extractor(x2_raw) + [x2_raw]
+        # # Apply attention after feature extraction
+        if self.conf.if_attention_mechanism:
+            # print(x1_pyramid[0].shape, x2_pyramid[0].shape)
+            x1_pyramid[0] = self.fuel_attention(x1_pyramid[0])
+            x2_pyramid[0] = self.fuel_attention(x2_pyramid[0])
         flows = []
         # init
         b_size, _, h_x1, w_x1, = x1_pyramid[0].size()
@@ -609,6 +633,10 @@ class UPFlow_net(tools.abstract_model):
         init_device = x1_pyramid[0].device
         flow_f = torch.zeros(b_size, 2, h_x1, w_x1, dtype=init_dtype, device=init_device).float()
         flow_b = torch.zeros(b_size, 2, h_x1, w_x1, dtype=init_dtype, device=init_device).float()
+        # Initialize inter_flow_f and inter_map_f with default values (e.g., None)
+        inter_flow_f = None
+        inter_map_f = None
+
         # build pyramid
         feature_level_ls = []
         for l, (x1, x2) in enumerate(zip(x1_pyramid, x2_pyramid)):
@@ -640,6 +668,20 @@ class UPFlow_net(tools.abstract_model):
             pass
 
         return flow_f_out, flow_b_out, flows[::-1], inter_flow_f, inter_map_f
+    
+    @staticmethod
+    def save_feature_map_as_image(feature_map, level, step, name, save_dir="feature_maps"):
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        
+        feature_map = feature_map.detach().cpu().numpy()[0]  # Take the first batch and move to CPU
+        avg_feature_map = feature_map.mean(axis=0)  # Take the average across channels
+        
+        plt.imshow(avg_feature_map, cmap='viridis')
+        plt.colorbar()
+        plt.title(f'{name} - Level {level} - Step {step}')
+        plt.savefig(os.path.join(save_dir, f'{name}_level_{level}_step_{step}.png'))
+        plt.close()
 
     def decode_level_res(self, level, flow_1, flow_2, feature_1, feature_1_1x1, feature_2, feature_2_1x1, img_ori_1, img_ori_2):
         flow_1_up_bilinear = upsample2d_flow_as(flow_1, feature_1, mode="bilinear", if_rate=True)
@@ -654,6 +696,17 @@ class UPFlow_net(tools.abstract_model):
                 flow_2_up_bilinear, _, _ = self.self_guided_upsample(flow_up_bilinear=flow_2_up_bilinear, feature_1=feature_2_1x1, feature_2=feature_1_1x1)
             feature_2_warp = self.warping_layer(feature_2, flow_1_up_bilinear)
             feature_1_warp = self.warping_layer(feature_1, flow_2_up_bilinear)
+
+        # # Apply attention after upsampling 
+        # if self.conf.if_attention_mechanism:
+        #     # self.save_feature_map_as_image(feature_1_1x1, level, step='before_attention', name='feature_1_1x1')
+        #     feature_1_1x1 = self.fuel_attention(feature_1_1x1)
+        #     # self.save_feature_map_as_image(feature_1_1x1, level, step='after_attention', name='feature_1_1x1')
+            
+        #     # self.save_feature_map_as_image(feature_2_1x1, level, step='before_attention', name='feature_2_1x1')
+        #     feature_2_1x1 = self.fuel_attention(feature_2_1x1)
+        #     # self.save_feature_map_as_image(feature_2_1x1, level, step='after_attention', name='feature_2_1x1')
+
         # if norm feature
         if self.conf.if_norm_before_cost_volume:
             feature_1, feature_2_warp = network_tools.normalize_features((feature_1, feature_2_warp), normalize=True, center=True,
@@ -725,6 +778,7 @@ class UPFlow_net(tools.abstract_model):
             'input_or_sp_input': 1,
             'if_use_boundary_warp': True,
             'if_use_cor_pytorch': True,
+            'if_attention_mechansim': True
         }
         net_conf = UPFlow_net.config()
         net_conf.update(param_dict)

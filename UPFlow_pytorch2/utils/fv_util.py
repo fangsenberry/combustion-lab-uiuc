@@ -126,6 +126,7 @@ class FlowInitialization:
             # plt.grid(True)
             plt.savefig(os.path.join(folder_path, f'{key}.png'))
             # plt.show()
+            plt.close()
 
             # Append to valid loss data for total loss calculation
             valid_loss_data.append(losses)
@@ -148,6 +149,7 @@ class FlowInitialization:
                 # plt.grid(True)
                 plt.savefig(os.path.join(folder_path, 'total_loss.png'))
                 # plt.show()
+                plt.close()
 
     def process_and_save_data(self):
         flow_vis_list, self.data['img_list'], self.data['warped_img_list'], self.data['gradient_list'], self.data['binary_image_list'], self.data['x'], self.data['y'] = self.create_flow_lists(
@@ -329,6 +331,7 @@ class FlowInitialization:
             plt.imshow(cropped_img, cmap='gray')
             plt.tight_layout()
             plt.show()
+            plt.close()
 
     @staticmethod
     def plot_flow_vectors_as_video(flow_vis_list, img_list, binary_image_list, x, y, start_x=0, end_x=None, start_y=0, end_y=None, step=10, video_filename='flow_vectors.mp4'):
@@ -406,6 +409,7 @@ class FlowInitialization:
         ax1.axis('off')
 
         plt.savefig('flow_and_colorwheel.png', bbox_inches='tight', pad_inches=0)
+        plt.close()
 
     @staticmethod
     def numerical_sort_key(file_name):
@@ -645,8 +649,9 @@ class FlowInitialization:
     ##################################################
 
 class FlowAnalysis:
-    def __init__(self, config, flow_vis_list):
+    def __init__(self, config, flow_vis_list, binary_mask_list):
         self.u_vectors, self.v_vectors = self.extract_flow_vectors(flow_vis_list)
+        self.binary_masks = np.array(binary_mask_list)  # Store the list of binary masks
         self.mean_u = None
         self.mean_v = None
         self.u_fluctuations = None
@@ -663,10 +668,99 @@ class FlowAnalysis:
             v_vectors.append(v)
         
         # Crop the first 10 columns of the flow vectors
-        u_vectors = np.array(u_vectors)[:, :, 10:]
-        v_vectors = np.array(v_vectors)[:, :, 10:]
+        u_vectors = np.array(u_vectors)
+        v_vectors = np.array(v_vectors)
         
         return u_vectors, v_vectors
+
+    def compute_flow_quantities(self):
+        # Get the velocity gradients using numpy.gradient
+        du_dx = np.gradient(self.u_vectors, axis=2)
+        du_dy = np.gradient(self.u_vectors, axis=1)
+        dv_dx = np.gradient(self.v_vectors, axis=2)
+        dv_dy = np.gradient(self.v_vectors, axis=1)
+
+        # 1. Compute Vorticity (dv/dx - du/dy)
+        vorticity = dv_dx - du_dy
+
+        # 2. Compute Shear Stress (shear components)
+        shear_stress_x = du_dy  # Shear stress in x direction (du/dy)
+        shear_stress_y = dv_dx  # Shear stress in y direction (dv/dx)
+
+        # 3. Compute Strain Rate Tensor (normal and shear strain rate)
+        strain_rate_xx = du_dx  # Normal strain rate in x direction
+        strain_rate_yy = dv_dy  # Normal strain rate in y direction
+        strain_rate_xy = 0.5 * (du_dy + dv_dx)  # Symmetric shear strain rate
+
+        return vorticity, shear_stress_x, shear_stress_y, strain_rate_xx, strain_rate_yy, strain_rate_xy
+
+    def apply_mask(self, quantity, mask_value=np.nan):
+        num_frames = quantity.shape[0]  # Assuming quantity has shape (num_frames, height, width)
+        masked_quantity = np.zeros_like(quantity)
+
+        for frame_idx in range(num_frames):
+            # Mask the regions outside the binary mask with the mask_value
+            masked_quantity[frame_idx] = np.where(self.binary_masks[frame_idx], quantity[frame_idx], mask_value)
+        
+        return masked_quantity
+
+    # Function to compute global min and max across all frames (ignoring NaN values)
+    def get_global_min_max(self, quantity):
+        global_min = np.nanmin(quantity)
+        global_max = np.nanmax(quantity)
+        return global_min, global_max
+
+    def plot_flow_quantity(self, quantity, title, mask_value=np.nan, save_dir="plots", save_data='example', file_format="png"):
+        # Apply mask to the quantity (e.g., vorticity, shear stress, strain rate)
+        save_dir=os.path.join(save_dir, f'flow_analysis_plots/{save_data}')
+
+        masked_quantity = self.apply_mask(quantity, mask_value)
+
+        # Get the global min and max for the colorbar range
+        global_min, global_max = self.get_global_min_max(masked_quantity)
+
+        # Ensure the directory exists
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Plot each frame with the same colorbar range and masked regions
+        num_frames = masked_quantity.shape[0]
+
+        for frame_idx in range(num_frames):
+            plt.figure(figsize=(12, 6))
+
+            # Plot the masked quantity for this frame, using global color limits
+            plt.imshow(masked_quantity[frame_idx], cmap='jet', aspect='auto', vmin=global_min, vmax=global_max)
+
+            plt.colorbar()
+            plt.title(f"{title} - Frame {frame_idx}", fontsize=16)
+            plt.xlabel('X Position', fontsize=16)
+            plt.ylabel('Y Position', fontsize=16)
+            plt.tight_layout()
+
+            # Save the plot to a file
+            file_name = os.path.join(save_dir, f"{title.replace(' ', '_').lower()}_frame_{frame_idx}.{file_format}")
+            plt.savefig(file_name)
+            plt.close()  # Close the plot to free up memory
+
+        print(f"Plots saved to {save_dir}")
+    
+    # Function to plot vorticity
+    def plot_vorticity(self, save_dir, save_data):
+        vorticity, _, _, _, _, _ = self.compute_flow_quantities()
+        self.plot_flow_quantity(vorticity, "Vorticity Field", save_dir=save_dir, save_data=save_data)
+
+    # Function to plot shear stress
+    def plot_shear_stress(self, save_dir, save_data):
+        _, shear_stress_x, shear_stress_y, _, _, _ = self.compute_flow_quantities()
+        self.plot_flow_quantity(shear_stress_x, "Shear Stress in X Direction", save_dir=save_dir, save_data=save_data)
+        self.plot_flow_quantity(shear_stress_y, "Shear Stress in Y Direction", save_dir=save_dir, save_data=save_data)
+
+    # Function to plot strain rate
+    def plot_strain_rate(self, save_dir, save_data):
+        _, _, _, strain_rate_xx, strain_rate_yy, strain_rate_xy = self.compute_flow_quantities()
+        self.plot_flow_quantity(strain_rate_xx, "Normal Strain Rate (xx)", save_dir=save_dir, save_data=save_data)
+        self.plot_flow_quantity(strain_rate_yy, "Normal Strain Rate (yy)", save_dir=save_dir, save_data=save_data)
+        self.plot_flow_quantity(strain_rate_xy, "Shear Strain Rate (xy)", save_dir=save_dir, save_data=save_data)
 
     def compute_rms(self, vectors):
         rms_values = np.sqrt(np.mean(vectors**2, axis=0))

@@ -379,28 +379,28 @@ class Trainer:
     def load_training_dataset(self, root_dir):
         augmentations = ComposePairs([RandomHorizontalFlip(p=0.2)])
         transform = transforms.Compose([transforms.ToTensor()])
-        dataset = CustomFlowDataset(root_dir, transform=transform, augmentations=None, target_mean=0.5, crop_size=None, num_crops_per_image=4, divide_into_regions=True)
+        dataset = CustomFlowDataset(root_dir, transform=transform, augmentations=None, target_mean=0.5, crop_size=None, num_crops_per_image=1, divide_into_regions=False)
         return dataset
 
 if __name__ == "__main__":
     # Training parameters
-    experiment_name = "UPF_A01_C_DP_35_trial_27"
+    experiment_name = "UPF_A01_C_DP_35_trial_35"
 
     # Training parameters
     training_param = {
         'exp_dir': os.path.join(r"D:\test_cases", experiment_name),  # Use the base name for exp_dir
-        'batchsize': 12,
+        'batchsize': 2,
         'NUM_WORKERS': 16,
-        'n_epoch': 25,
+        'n_epoch': 60,
         'batch_per_epoch': 500,
         'batch_per_print': 25,
-        'lr': 2e-4,
-        'weight_decay': 1e-4,
+        'lr': 5e-4,
+        'weight_decay': 1e-5,
         'scheduler_gamma': 1,
         'model_save_path': f'{experiment_name}.pth'  # Use the base name for model_save_path
     }
-    pretrain_path =r"D:\test_cases\UPF_A01_C_DP_35_trial_26\UPF_A01_C_DP_35_trial_26.pth"  # Add the path to the pretrained model if needed
-    root_dir = r"D:\contrast_adjusted_512-complex"
+    pretrain_path =None # Add the path to the pretrained model if needed
+    root_dir = r"D:\final_corrected_512-complex-27-6-24.pth_inference"
     
     param_dict = {
         'occ_type': 'for_back_check',
@@ -411,23 +411,24 @@ if __name__ == "__main__":
         'smooth_level': 'final',
         'smooth_type': 'edge',
         'smooth_order_1_weight': 0,
-        'smooth_order_2_weight': 1e-12,
-        'photo_loss_type': 'abs_robust',
+        'smooth_order_2_weight': 1e-6,
+        'photo_loss_type': 'SSIM',
         'photo_loss_delta': 0.4,
-        'photo_loss_use_occ': True,
+        'photo_loss_use_occ': False,
         'photo_loss_census_weight': 0.5,
         'if_norm_before_cost_volume': True,
         'norm_moments_across_channels': False,
         'norm_moments_across_images': False,
         'multi_scale_distillation_weight': 0.01,
         'multi_scale_distillation_style': 'upup',
-        'multi_scale_distillation_occ': True,
+        'multi_scale_distillation_occ': False,
         'if_froze_pwc': False,
         'input_or_sp_input': 1,
         'if_use_boundary_warp': True,
         'if_sgu_upsample': True,  # if use sgu upsampling
         'if_use_cor_pytorch': False,
         'photo_weighting': False,
+        'if_attention_mechanism': False
     }
     
     conf = Config(**training_param)

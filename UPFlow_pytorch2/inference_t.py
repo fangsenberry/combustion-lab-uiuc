@@ -82,21 +82,31 @@ def inference(model_path, dataset_path, result_path):
         logging.error(f"Skipping trial {model_path} due to error: {e}")
         raise  # Re-raise the exception to stop further processing
 
-def process_test_cases(base_path):
-    # Iterate over each directory in the base path
-    for trial_dir in os.listdir(base_path):
-        trial_path = os.path.join(base_path, trial_dir)
+def process_test_cases(base_path, specific_trial_numbers=None):
+    # If specific trial numbers are provided, only process those
+    if specific_trial_numbers is not None:
+        trial_dirs = []
+        for trial_dir in os.listdir(base_path):
+            try:
+                trial_number = int(trial_dir.split('_')[-1])
+                if trial_number in specific_trial_numbers:
+                    trial_dirs.append(os.path.join(base_path, trial_dir))
+            except ValueError:
+                # Skip any directories or files that don't end in a valid number
+                logging.info(f"Skipping directory or file {trial_dir} as it does not have a valid trial number.")
+                continue
+    else:
+        # Otherwise, process all directories in the base path
+        trial_dirs = [os.path.join(base_path, trial_dir) for trial_dir in os.listdir(base_path)]
+
+    for trial_path in trial_dirs:
+        trial_dir = os.path.basename(trial_path)
 
         try:
             trial_number = int(trial_dir.split('_')[-1])  # Assuming the trial number is at the end of the directory name
         except ValueError:
             logging.info(f"Skipping directory {trial_dir} as it does not have a valid trial number.")
             continue
-
-        # # Skip trials 24-28
-        # if trial_number >= 24:
-        #     logging.info(f"Skipping {trial_dir} because it requires a different model configuration.")
-        #     continue
         
         if os.path.isdir(trial_path):
             logging.info(f"Processing {trial_path}...")
@@ -173,12 +183,25 @@ def process_test_cases(base_path):
                 )
                 
                 flow_analysis_end = Fizi(config_end)
-                flow_analysis_end.average_heatmaps_with_confidence_intervals(gradient_list)
+                flow_vis_list2, img_list2, warped_img_list2, gradient_list2, binary_image_list, x, y = flow_analysis_end.create_flow_lists(
+                    config_35.trial_path, 
+                    config_35.img_path, 
+                    config_35.dir_ext, 
+                    step=config_35.step, 
+                    start_x=config_35.start_x, 
+                    warp=config_35.warp_analysis, 
+                    binary_image=config_35.binary_image_analysis,
+                    custom_range=config_35.custom_range
+                )
+                flow_analysis_end.average_heatmaps_with_confidence_intervals(gradient_list2)
+                plt.close('all')
                 logging.info(f'Completed flow analysis for {trial_path}')
                 
             except Exception as e:
                 print(f"An error occurred during processing of {trial_path}")
+                logging.error(f"An error occurred during processing of {trial_path}: {e}")
 
 if __name__ == "__main__":
     base_path = r"D:\test_cases"
-    process_test_cases(base_path)
+    specific_trial_numbers = [33]  # Specify the trial numbers you want to run
+    process_test_cases(base_path, specific_trial_numbers)

@@ -542,3 +542,73 @@ class OccContextNetwork(nn.Module):
     def forward(self, x):
         return self.convs(x)
 
+class FuelAttentionModule(nn.Module):
+    def __init__(self, ch_in, f_channels=(128, 128, 64, 32), kernel=3):
+        super(FuelAttentionModule, self).__init__()
+        self.kernel = kernel  # Store the kernel size for reference
+        N = 0
+        ind = 0
+        N += ch_in  # initial input channels
+        
+        # Define the convolutional layers with dense connections
+        self.conv1 = conv(N, f_channels[ind], kernel_size=kernel)
+        N += f_channels[ind]
+        ind += 1
+
+        self.conv2 = conv(N, f_channels[ind], kernel_size=kernel)
+        N += f_channels[ind]
+        ind += 1
+
+        self.conv3 = conv(N, f_channels[ind], kernel_size=kernel)
+        N += f_channels[ind]
+        ind += 1
+
+        self.conv4 = conv(N, f_channels[ind], kernel_size=kernel)
+        N += f_channels[ind]
+        ind += 1
+
+        # The final convolution layer outputs the attention map
+        self.conv_last = conv(N, ch_in, kernel_size=kernel, isReLU=False)
+        self.sigmoid = nn.Sigmoid()  # To normalize the attention map to [0, 1]
+
+    def forward(self, x):
+        # Implement dense connections
+        x1 = torch.cat([self.conv1(x), x], dim=1)
+        x2 = torch.cat([self.conv2(x1), x1], dim=1)
+        x3 = torch.cat([self.conv3(x2), x2], dim=1)
+        x4 = torch.cat([self.conv4(x3), x3], dim=1)
+
+        # Generate the attention map
+        attention_map = self.conv_last(x4)
+        attention_map = self.sigmoid(attention_map)  # Normalize to [0, 1]
+
+        # Modulate the input features by the attention map
+        return x * attention_map
+    
+class FuelAttentionModule_v2(nn.Module):
+    def __init__(self, ch_in, f_channels=(128, 128, 64, 32), kernel=3):
+        super(FuelAttentionModule_v2, self).__init__()
+        self.kernel = kernel  # Kernel size for convolutions
+        
+        # Layers to generate the spatial attention map
+        self.conv1 = conv(ch_in, f_channels[0], kernel_size=kernel)
+        self.conv2 = conv(f_channels[0], f_channels[1], kernel_size=kernel)
+        self.conv3 = conv(f_channels[1], f_channels[2], kernel_size=kernel)
+        self.conv4 = conv(f_channels[2], f_channels[3], kernel_size=kernel)
+        self.conv_last = conv(f_channels[3], 1, kernel_size=kernel, isReLU=False)  # Output is a single channel attention map
+        self.sigmoid = nn.Sigmoid()  # Normalize to [0, 1]
+
+    def forward(self, x):
+        # Forward pass to generate the spatial attention map
+        x1 = self.conv1(x)
+        x2 = self.conv2(x1)
+        x3 = self.conv3(x2)
+        x4 = self.conv4(x3)
+
+        # Generate the attention map
+        attention_map = self.conv_last(x4)
+        attention_map = self.sigmoid(attention_map)  # Normalize to [0, 1]
+
+        # Multiply the input by the attention map
+        out = x * attention_map
+        return out
