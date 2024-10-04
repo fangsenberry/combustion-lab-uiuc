@@ -66,6 +66,6 @@ def images_to_video(image_dir, output_video, fps=30):
     print(f"Video {output_video} has been successfully created.")
 
 if __name__ == "__main__":
-    image_directory = r"D:\test_cases\UPF_A01_C_DP_35_trial_33\flow_analysis_plots\shear_stress\shear_y"
+    image_directory = r"D:\test_cases\UPF_A01_C_DP_35_trial_35\flow_maps"
     output_video_path = os.path.join(image_directory, "output_video.mp4")
-    images_to_video(image_directory, output_video_path, fps=0.5)
+    images_to_video(image_directory, output_video_path, fps=5)

@@ -169,3 +169,5 @@ temp_cropped/
 *.png
 *.npy
 *.csv
+*.h5
+*.mp4

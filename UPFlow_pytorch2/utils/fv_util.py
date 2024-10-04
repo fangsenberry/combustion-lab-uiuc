@@ -258,32 +258,54 @@ class FlowInitialization:
     def pastel_colormap():
         """Create a pastel colormap."""
         colors = [
-            (204, 229, 255),  # Light blue
-            (255, 204, 204),  # Light red
-            (204, 255, 204),  # Light green
-            (255, 255, 204),  # Light yellow
-            (255, 204, 255),  # Light magenta
-            (204, 255, 255),  # Light cyan
-            (255, 229, 204),  # Light orange
-            (229, 204, 255),  # Light violet
-            (229, 255, 229)   # Light pastel green
-        ]
+        (170 / 255.0, 210 / 255.0, 255 / 255.0),  # Slightly deeper light blue
+        (255 / 255.0, 170 / 255.0, 170 / 255.0),  # Slightly deeper light red
+        (170 / 255.0, 255 / 255.0, 170 / 255.0),  # Slightly deeper light green
+        (255 / 255.0, 255 / 255.0, 170 / 255.0),  # Slightly deeper light yellow
+        (255 / 255.0, 170 / 255.0, 255 / 255.0),  # Slightly deeper light magenta
+        (170 / 255.0, 255 / 255.0, 255 / 255.0),  # Slightly deeper light cyan
+        (255 / 255.0, 210 / 255.0, 170 / 255.0),  # Slightly deeper light orange
+        (210 / 255.0, 170 / 255.0, 255 / 255.0),  # Slightly deeper light violet
+        (210 / 255.0, 255 / 255.0, 210 / 255.0)   # Slightly deeper light pastel green
+    ]
         return ListedColormap(colors, name='pastel')
     
     @staticmethod
     def visualize_flow(flow, type='basic'):
         """Visualize optical flow."""
         hsv = np.zeros((flow.shape[1], flow.shape[2], 3), dtype=np.uint8)
-        mag, ang = cv2.cartToPolar(flow[0], flow[1])
+        mag, ang = cv2.cartToPolar(-flow[0], flow[1])
         hsv[..., 0] = ang * 180 / np.pi / 2
         hsv[..., 1] = 255
         hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
-        color_map = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        
         if type == 'pastel':
+            # Normalize hsv[..., 2] to the range [0, 1]
+            normalized_value = hsv[..., 2] / 255.0
+
+            # Get the pastel colormap
             pastel_map = FlowInitialization.pastel_colormap()
-            color_map = pastel_map(hsv[..., 2]).astype(np.uint8)
+
+            # Apply the colormap (this returns RGBA)
+            rgba_image = pastel_map(normalized_value)
+
+            # Convert RGBA to RGB by ignoring the alpha channel
+            color_map = (rgba_image[..., :3] * 255).astype(np.uint8)
         elif type == 'custom':
+            #move first channel to last channel
+
+            
+            flow=np.moveaxis(flow, 0, -1)
+            # print(flow.shape)
             color_map = flow_viz.flow_to_image(flow)
+        elif type == 'basic':
+
+            # Flip the hues around the midpoint (90 degrees)
+            # hsv[..., 0] = (hsv[..., 0] + 180) % 180  # Shift hues by 180 degrees and wrap using modulo 180
+
+            color_map = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        else:
+            raise ValueError(f"Invalid flow visualization type: {type}")
         return color_map
 
     @staticmethod
@@ -294,6 +316,7 @@ class FlowInitialization:
 
         if reverse_flow:
             u, v = -u, -v
+            
 
         flow_vis = FlowInitialization.visualize_flow(flow, type=flow_vis_type)
 
@@ -462,7 +485,22 @@ class FlowInitialization:
 
             # Convert to 8-bit and perform segmentation
             if binary_image:
-                _, bin_im, _, _ = ed.lig_segment(img_path, canny_threshold1=20, canny_threshold2=100, min_area=10, max_area=1000, k=3, plot_kmeans=None)
+                
+                # _, bin_im, _, _ = ed.lig_segment(img_path, canny_threshold1=40, canny_threshold2=100, min_area=10, max_area=1000, k=3, plot_kmeans=None)
+                # Apply adaptive thresholding (Mean)
+                img = img.astype(np.uint8)  # Convert back to uint8 (8-bit) for OpenCV operations
+                adaptive_thresh_mean = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
+                                                            cv2.THRESH_BINARY, 35, 7)
+
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))  # A small 3x3 kernel
+                kernel2= cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))  # A small 3x3 kernel
+
+                # Perform slight dilation
+                dilated_image = cv2.erode(adaptive_thresh_mean, kernel, iterations=1)  # 'iterations=1' means slight dilation
+                dilated_image = cv2.dilate(dilated_image, kernel2, iterations=1)  # 'iterations=1' means slight dilation
+                bin_im = dilated_image
+                bin_im= cv2.bitwise_not(bin_im)
+
                 cropped_bin_im = cv2.resize(bin_im, (target_width, target_height))
                 binary_image_list.append(cropped_bin_im)
 
@@ -649,9 +687,11 @@ class FlowInitialization:
     ##################################################
 
 class FlowAnalysis:
-    def __init__(self, config, flow_vis_list, binary_mask_list):
-        self.u_vectors, self.v_vectors = self.extract_flow_vectors(flow_vis_list)
+    def __init__(self, config, flow_vis_list, binary_mask_list, image_list, x, y):
+        self.u_vectors, self.v_vectors, self.flow_vis_images = self.extract_flow_vectors(flow_vis_list)
         self.binary_masks = np.array(binary_mask_list)  # Store the list of binary masks
+        self.image_list = np.array(image_list)  # Store the list of images
+        self.x, self.y = x, y
         self.mean_u = None
         self.mean_v = None
         self.u_fluctuations = None
@@ -661,9 +701,11 @@ class FlowAnalysis:
     def extract_flow_vectors(self, flow_vis_list):
         u_vectors = []
         v_vectors = []
+        flow_vis_images = []
 
         for flow_vis in flow_vis_list:
-            _, u, v = flow_vis  # Assuming flow_vis_list contains tuples with flow vectors
+            flow_vis, u, v = flow_vis  # Assuming flow_vis_list contains tuples with flow vectors
+            flow_vis_images.append(flow_vis)
             u_vectors.append(u)
             v_vectors.append(v)
         
@@ -671,7 +713,7 @@ class FlowAnalysis:
         u_vectors = np.array(u_vectors)
         v_vectors = np.array(v_vectors)
         
-        return u_vectors, v_vectors
+        return u_vectors, v_vectors, flow_vis_images
 
     def compute_flow_quantities(self):
         # Get the velocity gradients using numpy.gradient
@@ -766,10 +808,16 @@ class FlowAnalysis:
         rms_values = np.sqrt(np.mean(vectors**2, axis=0))
         return rms_values
 
-    def save_flow_vectors(self):
-        # Create separate directories for u and v plots
-        u_dir = os.path.join(self.config.trial_path, 'UV_plots/u_plots')
-        v_dir = os.path.join(self.config.trial_path, 'UV_plots/v_plots')
+    def save_flow_vectors(self, apply_mask=False, flip=False):
+        # Determine directory names based on whether mask is applied
+        if apply_mask:
+            u_dir = os.path.join(self.config.trial_path, 'UV_plots_masked/u_plots')
+            v_dir = os.path.join(self.config.trial_path, 'UV_plots_masked/v_plots')
+        else:
+            u_dir = os.path.join(self.config.trial_path, 'UV_plots/u_plots')
+            v_dir = os.path.join(self.config.trial_path, 'UV_plots/v_plots')
+
+        # Create directories
         os.makedirs(u_dir, exist_ok=True)
         os.makedirs(v_dir, exist_ok=True)
 
@@ -782,32 +830,130 @@ class FlowAnalysis:
             u_max = max(u_max, u.max())
             v_min = min(v_min, v.min())
             v_max = max(v_max, v.max())
+        
+        print(f"Global min and max for u vectors: {u_min}, {u_max}")
+        print(f"Global min and max for v vectors: {v_min}, {v_max}")
 
         # Plot and save u and v vectors with consistent axis limits
         for idx, (u, v) in enumerate(zip(self.u_vectors, self.v_vectors)):
+            if apply_mask:
+                # Apply binary mask if the option is enabled
+                binary_mask = self.binary_masks[idx]  # Assuming binary_images is a list of binary masks
+
+                # Mask the u and v vectors using the binary mask
+                u_masked = np.where(binary_mask, u, np.nan)
+                v_masked = np.where(binary_mask, v, np.nan)
+            else:
+                # No mask applied, use original vectors
+                u_masked = u
+                v_masked = v
+            
+            if flip:
+                # Flip the vectors vertically
+                u_masked = np.fliplr(u_masked)  # Flip horizontally
+                v_masked = np.fliplr(v_masked)
+
             # Plot u vectors
             fig_u, ax_u = plt.subplots(figsize=(6, 6))
-            im_u = ax_u.imshow(u, cmap='jet', aspect='auto', vmin=u_min, vmax=u_max)
-            ax_u.set_title(f'u vectors - Frame {idx}')
-            cbar_u = fig_u.colorbar(im_u, ax=ax_u, orientation='vertical')
-            cbar_u.set_label('Intensity')
-            
-            # Save u vector plot in u_plots directory
+            im_u = ax_u.imshow(u_masked, cmap='jet', aspect='auto', vmin=u_min, vmax=u_max)
+            # ax_u.set_title(f'u vectors - Frame {idx}')
+            # cbar_u = fig_u.colorbar(im_u, ax=ax_u, orientation='vertical')
+            # cbar_u.set_label('Intensity')
+
+            # Save u vector plot in appropriate directory
+            plt.axis('off')
             plt.tight_layout()
             plt.savefig(os.path.join(u_dir, f'u_vectors_frame_{idx}.png'))
             plt.close(fig_u)
 
             # Plot v vectors
             fig_v, ax_v = plt.subplots(figsize=(6, 6))
-            im_v = ax_v.imshow(v, cmap='jet', aspect='auto', vmin=v_min, vmax=v_max)
-            ax_v.set_title(f'v vectors - Frame {idx}')
-            cbar_v = fig_v.colorbar(im_v, ax=ax_v, orientation='vertical')
-            cbar_v.set_label('Intensity')
-            
-            # Save v vector plot in v_plots directory
+            im_v = ax_v.imshow(v_masked, cmap='jet', aspect='auto', vmin=v_min, vmax=v_max)
+            # ax_v.set_title(f'v vectors - Frame {idx}')
+            # cbar_v = fig_v.colorbar(im_v, ax=ax_v, orientation='vertical')
+            # cbar_v.set_label('Intensity')
+
+            # Save v vector plot in appropriate directory
+            plt.axis('off')
             plt.tight_layout()
             plt.savefig(os.path.join(v_dir, f'v_vectors_frame_{idx}.png'))
             plt.close(fig_v)
+    
+    @staticmethod
+    def detect_edges_sobel(images):
+        edges = []
+        for image in images:
+            sobelx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=5)
+            sobely = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=5)
+            magnitude = np.sqrt(sobelx**2 + sobely**2)
+            
+            # Normalize the gradient magnitude to the range [0, 1]
+            magnitude = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX)
+            
+            edges.append(magnitude)
+        return edges
+        
+    def plot_and_save_flowmaps(self, plot_type='flow_maps', edge_mask=False, flip=False):
+        output_dir = self.config.trial_path
+
+        # Create the output directory if it doesn't exist
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        fig, ax = plt.subplots(1, 1, figsize=(18, 6))
+
+        # Detect edges using Sobel filter
+        edges_list = self.detect_edges_sobel(self.image_list)
+
+        # Get the minimum number of frames to prevent out-of-bounds errors
+        num_frames = min(len(self.flow_vis_images), len(self.image_list), len(edges_list))
+
+        def update_plot(i):
+            ax.cla()
+
+            # Access each flow visualization directly from the list
+            flow_vis = self.flow_vis_images[i]
+
+            # Use the edges as a mask if edge_mask is True
+            if edge_mask:
+                edges = edges_list[i]
+
+                # Ensure the edge mask matches the shape of the flow_vis (height and width)
+                if edges.shape != flow_vis.shape[:2]:
+                    edges_resized = cv2.resize(edges, (flow_vis.shape[1], flow_vis.shape[0]), interpolation=cv2.INTER_NEAREST)
+                else:
+                    edges_resized = edges
+
+                # Apply the threshold to the Sobel edges
+                mask = edges_resized > 0.075 * 255
+
+                # Convert mask to 3 channels to match the flow_vis shape (280x600x3)
+                mask = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
+
+                # Apply the mask via element-wise multiplication
+                flow_vis_masked = flow_vis * mask
+            else:
+                flow_vis_masked = flow_vis
+            
+            if flip:
+                flow_vis_masked = np.fliplr(flow_vis_masked)
+                
+
+            # Plot the masked flow visualization
+            if plot_type in ['flow_maps', 'both']:
+                ax.imshow(flow_vis_masked)
+                ax.axis('off')
+                save_path = os.path.join(output_dir, f'flow_maps/flow_maps_{i}.png')
+                #if path doesnt exist, create it
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
+
+        # Loop through each frame and update the plot
+        for i in range(num_frames):
+            update_plot(i)
+            plt.cla()  # Clear the current plot for the next frame
+
+        plt.close(fig)
 
     def compute_mean_velocities(self):
         self.mean_u = np.mean(self.u_vectors, axis=0)

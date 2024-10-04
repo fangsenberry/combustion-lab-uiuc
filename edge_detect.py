@@ -365,8 +365,9 @@ def lig_segment(image_path, canny_threshold1=20, canny_threshold2=100, min_area=
     edges = apply_canny_edge_detection(manually_cropped_image, canny_threshold1, canny_threshold2)
     small_rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
     dilated_edges = cv2.dilate(edges, small_rect_kernel, iterations=1)
-    filled_edges = cv2.morphologyEx(dilated_edges, cv2.MORPH_CLOSE, small_rect_kernel, iterations=1)
 
+    filled_edges = cv2.morphologyEx(dilated_edges, cv2.MORPH_CLOSE, small_rect_kernel, iterations=1)
+    
     binary_image = cv2.bitwise_not(filled_edges)
     contours, hierarchy = cv2.findContours(binary_image, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -385,6 +386,10 @@ def lig_segment(image_path, canny_threshold1=20, canny_threshold2=100, min_area=
             axes[cluster_id].set_title(f'Cluster {cluster_id}')
             axes[cluster_id].axis('off')
         plt.show()
+    
+
+    # # Perform morphological opening to remove small objects
+    # binary_image = cv2.erode(binary_image, small_rect_kernel, iterations=1)
     
     binary_image = cv2.bitwise_not(binary_image)
 
