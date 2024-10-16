@@ -12,6 +12,7 @@ from utils.tools import tools
 import sys
 import logging
 from datetime import datetime
+from tqdm import tqdm
 
 # Add the utils directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'utils')))
@@ -46,7 +47,7 @@ def inference(model_path, dataset_path, result_path):
         config = Config(**training_params)
         
         # Initialize Trainer with the loaded configuration and parameter dictionary
-        trainer = Trainer(config, param_dict=param_dict)
+        trainer = Trainer(config, param_dict=param_dict, mode='inference')
         
         # Load the model for inference
         model = trainer.load_model(model_path=model_path, mode='inference')
@@ -57,7 +58,7 @@ def inference(model_path, dataset_path, result_path):
 
         # Load dataset
         dataset = CustomFlowDataset(dataset_path, transform=transforms.Compose([transforms.ToTensor()]), target_mean=0.5, crop_size=None, num_crops_per_image=1)
-        dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4)
+        dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=16)
         restore_output()
 
         # Inference
@@ -117,14 +118,15 @@ def process_test_cases(base_path, specific_trial_numbers=None):
                 logging.info(f'Model path does not exist for {trial_path}')
                 continue
 
-            dataset_path = r"D:\final_corrected_512-complex-27-6-24.pth_inference"
+            dataset_path = r"D:\Spray_conditions\A03_512-complex-09-08-24.pth_inference\denoised_images"
             result_path = os.path.join(trial_path, 'flow_npy')
             os.makedirs(result_path, exist_ok=True)
             
             try:
                 # Run inference
-                inference(model_path, dataset_path, result_path)
-                logging.info(f'Finished inference for {trial_path}')
+                # print(f'Running inference for {trial_path}...')
+                # inference(model_path, dataset_path, result_path)
+                # logging.info(f'Finished inference for {trial_path}')
                 
                 # Define your experiment parameters for analysis with custom_range=35
                 config_35 = FlowConfig(
@@ -162,7 +164,7 @@ def process_test_cases(base_path, specific_trial_numbers=None):
                 flow_analysis_35.plot_and_save_losses()
                 flow_analysis_35.generate_global_heatmaps(gradient_list)
                 flow_analysis_35.save_warped_images(warped_img_list)
-                flow_extraction=Flay(config_35, flow_vis_list)
+                flow_extraction=Flay(config_35, flow_vis_list, binary_image_list, img_list, x, y)
                 flow_extraction.save_flow_vectors()
                 
                 # Now perform the average_heatmaps_with_confidence_intervals with custom_range='end'
@@ -202,6 +204,6 @@ def process_test_cases(base_path, specific_trial_numbers=None):
                 logging.error(f"An error occurred during processing of {trial_path}: {e}")
 
 if __name__ == "__main__":
-    base_path = r"D:\test_cases"
-    specific_trial_numbers = [35]  # Specify the trial numbers you want to run
+    base_path = r"D:\Spray_conditions\A03_512-complex-09-08-24.pth_inference"
+    specific_trial_numbers = [1]  # Specify the trial numbers you want to run
     process_test_cases(base_path, specific_trial_numbers)

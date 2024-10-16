@@ -11,6 +11,8 @@ import random
 import numpy as np
 import pickle
 import matplotlib.pyplot as plt
+import json
+import argparse
 
 class ComposePairs:
     def __init__(self, transforms):
@@ -193,6 +195,8 @@ class Config:
         self.weight_decay = 1e-4
         self.scheduler_gamma = 1
         self.model_save_path = 'upflow_net_state_dict_final.pth'
+        self.image_path = 'ex_images.png'
+        self.pretrain_path = None
 
         self.update(kwargs)
 
@@ -213,16 +217,20 @@ class Config:
         return Config(**kwargs)
 
 class Trainer:
-    def __init__(self, config, param_dict, pretrain_path=None, root_dir=None):
+    def __init__(self, config, param_dict, mode='train'):
         self.config = config
         self.param_dict = param_dict
-        self.pretrain_path = pretrain_path
-        self.root_dir = root_dir
+        self.pretrain_path = config.pretrain_path
+        self.image_path = config.image_path
+        self.mode=mode
+        self.model_path = os.path.join(self.config.exp_dir, self.config.model_save_path)
 
         tools.check_dir(self.config.exp_dir)
 
         self.net = self.load_model(pretrain_path=self.pretrain_path)
-        self.train_set = self.load_training_dataset(self.root_dir)
+
+        self.train_set = self.load_training_dataset(self.image_path)
+        #above has been a problematic line
 
     def training(self):
         train_loader = DataLoader(
@@ -234,7 +242,7 @@ class Trainer:
             drop_last=True
         )
         optimizer = torch.optim.Adam(self.net.parameters(), lr=self.config.lr, amsgrad=True, weight_decay=self.config.weight_decay)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.25, patience=5)
         loss_manager = Loss_manager()
         timer = tools.time_clock()
         print("start training" + '=' * 10)
@@ -358,79 +366,116 @@ class Trainer:
         }
         torch.save(model_state, path)
 
-    def load_model(self, model_path=None, mode='train', pretrain_path=None):
+    def load_model(self):
         net_conf = UPFlow_net.config()
         net_conf.update(self.param_dict)
         net = UPFlow_net(net_conf)
 
-        if mode == 'inference' and model_path:
-            state_dict = torch.load(model_path)
+        if self.mode == 'inference' and self.model_path:
+            state_dict = torch.load(self.model_path)
             net.load_state_dict(state_dict['state_dict'], strict=False)
+            if self.config.if_cuda:
+                net=net.cuda()
             net.eval()
         else:
-            if pretrain_path is not None:
-                state_dict = torch.load(pretrain_path)
+            if self.pretrain_path is not None:
+                state_dict = torch.load(self.pretrain_path)
                 net.load_state_dict(state_dict['state_dict'], strict=False)
             if self.config.if_cuda:
                 net = net.cuda()
             net.train()
         return net
 
-    def load_training_dataset(self, root_dir):
-        augmentations = ComposePairs([RandomHorizontalFlip(p=0.2)])
-        transform = transforms.Compose([transforms.ToTensor()])
-        dataset = CustomFlowDataset(root_dir, transform=transform, augmentations=None, target_mean=0.5, crop_size=None, num_crops_per_image=1, divide_into_regions=False)
+    def load_training_dataset(self):
+        if self.mode == 'train':
+            augmentations = ComposePairs([RandomHorizontalFlip(p=0.2)])
+            transform = transforms.Compose([transforms.ToTensor()])
+            dataset = CustomFlowDataset(self.image_path, transform=transform, augmentations=None, target_mean=0.5, crop_size=None, num_crops_per_image=1, divide_into_regions=False)
+        elif self.mode == 'inference':
+            transform = transforms.Compose([transforms.ToTensor()])
+            dataset = CustomFlowDataset(self.image_path, transform=transform, augmentations=None, target_mean=0.5, crop_size=None, num_crops_per_image=1, divide_into_regions=False)
+        else:
+            raise ValueError("Mode should be either 'train' or 'inference'.")
         return dataset
 
-if __name__ == "__main__":
-    # Training parameters
-    experiment_name = "UPF_A01_C_DP_35_trial_35"
+def load_config(json_file):
+    with open(json_file, 'r') as f:
+        config = json.load(f)
+    experiment_name = config['experiment_name']
+    config['training_param']['exp_dir'] = config['training_param']['exp_dir'].format(experiment_name=experiment_name)
+    config['training_param']['model_save_path'] = config['training_param']['model_save_path'].format(experiment_name=experiment_name)
+    return config
 
-    # Training parameters
-    training_param = {
-        'exp_dir': os.path.join(r"D:\test_cases", experiment_name),  # Use the base name for exp_dir
-        'batchsize': 2,
-        'NUM_WORKERS': 16,
-        'n_epoch': 60,
-        'batch_per_epoch': 500,
-        'batch_per_print': 25,
-        'lr': 5e-4,
-        'weight_decay': 1e-5,
-        'scheduler_gamma': 1,
-        'model_save_path': f'{experiment_name}.pth'  # Use the base name for model_save_path
-    }
-    pretrain_path =None # Add the path to the pretrained model if needed
-    root_dir = r"D:\final_corrected_512-complex-27-6-24.pth_inference"
+if __name__ == "__main__":
+    # Set up argument parser to accept a config file as an argument
+    parser = argparse.ArgumentParser(description="Train a model with parameters from a config file.")
+    parser.add_argument('--config', type=str, required=True, help="Path to the JSON config file e.g. config.json")
     
-    param_dict = {
-        'occ_type': 'for_back_check',
-        'alpha_1': 0.1,
-        'alpha_2': 0.5,
-        'occ_check_obj_out_all': 'obj',
-        'stop_occ_gradient': False,
-        'smooth_level': 'final',
-        'smooth_type': 'edge',
-        'smooth_order_1_weight': 0,
-        'smooth_order_2_weight': 1e-6,
-        'photo_loss_type': 'SSIM',
-        'photo_loss_delta': 0.4,
-        'photo_loss_use_occ': False,
-        'photo_loss_census_weight': 0.5,
-        'if_norm_before_cost_volume': True,
-        'norm_moments_across_channels': False,
-        'norm_moments_across_images': False,
-        'multi_scale_distillation_weight': 0.01,
-        'multi_scale_distillation_style': 'upup',
-        'multi_scale_distillation_occ': False,
-        'if_froze_pwc': False,
-        'input_or_sp_input': 1,
-        'if_use_boundary_warp': True,
-        'if_sgu_upsample': True,  # if use sgu upsampling
-        'if_use_cor_pytorch': False,
-        'photo_weighting': False,
-        'if_attention_mechanism': False
-    }
+    # Parse the arguments
+    args = parser.parse_args()
     
+    # Load the configuration from the provided JSON file
+    config = load_config(args.config)
+
+    # Extracting parameters from config
+    experiment_name = config['experiment_name']
+    training_param = config['training_param']
+    param_dict = config['param_dict']
+
+    # Initialize Config and Trainer
     conf = Config(**training_param)
-    trainer = Trainer(conf, param_dict=param_dict, pretrain_path=pretrain_path, root_dir=root_dir)
+    trainer = Trainer(conf, param_dict=param_dict)
+
+    # Start training
     trainer.training()
+
+
+"""
+# This is an example of a typical JSON configuration that can be used in your project.
+
+{
+    "experiment_name": "UPF_A03_C_DP_30_trial_1",
+    "training_param": {
+        "exp_dir": "D:/Spray conditions/A03_512-complex-09-08-24.pth_inference/UPF_A03_C_DP_30_trial_1",  # Directory for the experiment
+        "batchsize": 2,  # Batch size for training
+        "NUM_WORKERS": 16,  # Number of workers for data loading
+        "n_epoch": 60,  # Number of epochs for training
+        "batch_per_epoch": 500,  # Number of batches per epoch
+        "batch_per_print": 25,  # Number of batches after which the results are printed
+        "lr": 0.0002,  # Learning rate for the optimizer
+        "weight_decay": 0.00001,  # Weight decay for regularization
+        "scheduler_gamma": 1,  # Learning rate scheduler gamma
+        "model_save_path": "UPF_A03_C_DP_30_trial_1.pth"  # Path to save the trained model
+    },
+    "param_dict": {
+        "occ_type": "for_back_check",  # Type of occlusion handling
+        "alpha_1": 0.1,  # Parameter alpha_1 for the model
+        "alpha_2": 0.5,  # Parameter alpha_2 for the model
+        "occ_check_obj_out_all": "obj",  # Occlusion check mode
+        "stop_occ_gradient": false,  # Whether to stop the gradient during occlusion check
+        "smooth_level": "final",  # Smoothing level for post-processing
+        "smooth_type": "edge",  # Type of smoothing used (edge-based smoothing)
+        "smooth_order_1_weight": 0,  # Weight for first-order smoothing
+        "smooth_order_2_weight": 0.000001,  # Weight for second-order smoothing
+        "photo_loss_type": "SSIM",  # Type of photometric loss (e.g., SSIM)
+        "photo_loss_delta": 0.4,  # Delta value for photometric loss
+        "photo_loss_use_occ": false,  # Whether to use occlusion in photo loss calculation
+        "photo_loss_census_weight": 0.5,  # Weight for census-based photometric loss
+        "if_norm_before_cost_volume": true,  # Normalize before calculating cost volume
+        "norm_moments_across_channels": false,  # Normalize moments across channels
+        "norm_moments_across_images": false,  # Normalize moments across images
+        "multi_scale_distillation_weight": 0.01,  # Weight for multi-scale distillation loss
+        "multi_scale_distillation_style": "upup",  # Style of multi-scale distillation
+        "multi_scale_distillation_occ": false,  # Whether to apply occlusion in distillation
+        "if_froze_pwc": false,  # Whether to freeze the PWC-Net layers
+        "input_or_sp_input": 1,  # Input type for the model
+        "if_use_boundary_warp": true,  # Whether to use boundary warping in the model
+        "if_sgu_upsample": true,  # Whether to use SGU upsample method
+        "if_use_cor_pytorch": false,  # Use PyTorch implementation of correlation
+        "photo_weighting": false,  # Whether to apply photo weighting in the loss function
+        "if_attention_mechanism": false  # Whether to apply attention mechanism in the model
+    },
+    "pretrain_path": null,  # Path to a pre-trained model (if any), otherwise null
+    "root_dir": "D:/Spray conditions/A03_512-complex-09-08-24.pth_inference/denoised_images"  # Root directory for the denoised images
+}
+"""

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 def extract_frames_to_png(tiff_path, output_dir, num_frames_to_skip=200):
     """
     Extract frames from a .tiff file to .png format, skipping the first n frames.
-    
+
     Parameters:
         tiff_path (str): Path to the .tiff file.
         output_dir (str): Directory to save the extracted .png frames.
@@ -178,25 +178,16 @@ def process_tiff_file(tiff_path, output_dir, start_x, start_y, end_x, end_y, num
     remove_striations(vignette_corrected_files, avg_image, final_output_dir)
 
 def main():
-    dir_path = 'data/noisy_images'  # Change this to your directory path
+    tiff_file_path = r"D:\case_F24_centerline\f24_centerline_100C_C001H001S0007_S0001.tif"
     start_x, start_y, end_x, end_y = 0, 0, 600, None  # Set your cropping dimensions here
     num_frames_to_skip = 200  # Set the number of frames to skip here
 
     # Create a new directory for preprocessed images
-    preprocessed_dir = dir_path + '_preprocessed'
+    preprocessed_dir = tiff_file_path + '_preprocessed'
     os.makedirs(preprocessed_dir, exist_ok=True)
 
-    # Process each .tiff file in the directory
-    for i, filename in enumerate(os.listdir(dir_path)):
-        print(f"File Progress: {i + 1}/{len(os.listdir(dir_path))}")
-        if filename.endswith('.tif'):
-            tiff_path = os.path.join(dir_path, filename)
-            # Create a subdirectory for the processed frames
-            output_sub_dir = os.path.join(preprocessed_dir, os.path.splitext(filename)[0])
-            os.makedirs(output_sub_dir, exist_ok=True)
-
-            # Process the .tiff file
-            process_tiff_file(tiff_path, output_sub_dir, start_x, start_y, end_x, end_y, num_frames_to_skip)
+    # Process the .tiff file (no os.listdir() needed as we are working with a single file)
+    process_tiff_file(tiff_file_path, preprocessed_dir, start_x, start_y, end_x, end_y, num_frames_to_skip)
 
 if __name__ == '__main__':
     main()

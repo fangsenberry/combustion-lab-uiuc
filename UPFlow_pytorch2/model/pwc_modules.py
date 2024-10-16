@@ -228,12 +228,12 @@ class WarpingLayer(nn.Module):
         flo_list.append(flo_h)
         flow_for_grid = torch.stack(flo_list).transpose(0, 1)
         grid = torch.add(get_grid(x), flow_for_grid).transpose(1, 2).transpose(2, 3)
-        x_warp = tf.grid_sample(x, grid)
+        x_warp = tf.grid_sample(x, grid, align_corners=True)
         if x.is_cuda:
             mask = torch.ones(x.size(), requires_grad=False).cuda()
         else:
             mask = torch.ones(x.size(), requires_grad=False)  # .cuda()
-        mask = tf.grid_sample(mask, grid)
+        mask = tf.grid_sample(mask, grid, align_corners=True)
         mask = (mask >= 1.0).float()
         return x_warp * mask
 
@@ -259,12 +259,12 @@ class WarpingLayer_no_div(nn.Module):
         vgrid[:, 0, :, :] = 2.0 * vgrid[:, 0, :, :] / max(W - 1, 1) - 1.0
         vgrid[:, 1, :, :] = 2.0 * vgrid[:, 1, :, :] / max(H - 1, 1) - 1.0
         vgrid = vgrid.permute(0, 2, 3, 1)  # B H,W,C
-        x_warp = tf.grid_sample(x, vgrid, padding_mode='zeros')
+        x_warp = tf.grid_sample(x, vgrid, padding_mode='zeros', align_corners=True)
         if x.is_cuda:
             mask = torch.ones(x.size(), requires_grad=False).cuda()
         else:
             mask = torch.ones(x.size(), requires_grad=False)  # .cuda()
-        mask = tf.grid_sample(mask, vgrid)
+        mask = tf.grid_sample(mask, vgrid, align_corners=True)
         mask = (mask >= 1.0).float()
         return x_warp * mask
 
@@ -318,31 +318,31 @@ class FlowEstimatorDense_v2(nn.Module):
         N += ch_in  # initial input channels
         self.conv1 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
-        print(f'1st layer {N - f_channels[ind]}, {f_channels[ind]}')
+        # print(f'1st layer {N - f_channels[ind]}, {f_channels[ind]}')
 
         ind += 1
         self.conv2 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
-        print(f'2nd layer {N - f_channels[ind]}, {f_channels[ind]}')
+        # print(f'2nd layer {N - f_channels[ind]}, {f_channels[ind]}')
 
         ind += 1
         self.conv3 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
-        print(f'3rd layer {N - f_channels[ind]}, {f_channels[ind]}')
+        # print(f'3rd layer {N - f_channels[ind]}, {f_channels[ind]}')
 
         ind += 1
         self.conv4 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
-        print(f'4th layer {N - f_channels[ind]}, {f_channels[ind]}')
+        # print(f'4th layer {N - f_channels[ind]}, {f_channels[ind]}')
 
         ind += 1
         self.conv5 = conv(N, f_channels[ind], kernel_size=kernel)
         N += f_channels[ind]
-        print(f'5th layer {N - f_channels[ind]}, {f_channels[ind]}')
+        # print(f'5th layer {N - f_channels[ind]}, {f_channels[ind]}')
         self.n_channels = N
         ind += 1
         self.conv_last = conv(N, out_channel, kernel_size=kernel, isReLU=False)
-        print(f'last layer {N}, {out_channel}')
+        # print(f'last layer {N}, {out_channel}')
 
     def forward(self, x):
         x1 = torch.cat([self.conv1(x), x], dim=1)
