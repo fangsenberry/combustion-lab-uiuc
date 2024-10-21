@@ -1,7 +1,7 @@
 {
-    "experiment_name": "UPF_A05_C_DP_26_trial_2",
+    "experiment_name": "UPF_A03_C_DP_30_trial_2",
     "training_param": {
-        "exp_dir": "/home/caseyjo2/combustion-lab-uiuc/test_cases/{experiment_name}", 
+        "exp_dir": "D:\\Spray_conditions\\A03_512-complex-09-08-24.pth_inference\\{experiment_name}", 
         "batchsize": 2,  
         "NUM_WORKERS": 16,  
         "n_epoch": 60,  
@@ -12,7 +12,7 @@
         "scheduler_gamma": 1,  
         "model_save_path": "{experiment_name}.pth",
         "pretrain_path": null, 
-        "image_path": "/home/caseyjo2/combustion-lab-uiuc/data/noisy_images_preprocessed/A05_C_DP_26.0/models/512-complex-10-14-24.pth_inference/" 
+        "image_path": "D:\\Spray_conditions\\A03_512-complex-09-08-24.pth_inference\\denoised_images"
     },
     "param_dict": {
         "occ_type": "for_back_check",  

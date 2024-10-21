@@ -13,6 +13,8 @@ import pickle
 import matplotlib.pyplot as plt
 import json
 import argparse
+from tqdm import tqdm
+from colorama import Fore, Style
 
 class ComposePairs:
     def __init__(self, transforms):
@@ -222,86 +224,70 @@ class Trainer:
         self.param_dict = param_dict
         self.pretrain_path = config.pretrain_path
         self.image_path = config.image_path
-        self.mode=mode
+        self.mode = mode
         self.model_path = os.path.join(self.config.exp_dir, self.config.model_save_path)
 
         tools.check_dir(self.config.exp_dir)
 
-        self.net = self.load_model(pretrain_path=self.pretrain_path)
+        self.net = self.load_model()
 
-        self.train_set = self.load_training_dataset(self.image_path)
-        #above has been a problematic line
-
-    def training(self):
-        train_loader = DataLoader(
+        self.train_set = self.load_training_dataset()
+        self.dataloader = DataLoader(
             self.train_set,
-            batch_size=self.config.batchsize,
-            shuffle=True,
+            batch_size=self.config.batchsize if self.mode == 'train' else 1,  # Adjust for inference
+            shuffle=self.mode == 'train',  # Only shuffle during training
             num_workers=self.config.NUM_WORKERS,
             pin_memory=True,
-            drop_last=True
+            drop_last=self.mode == 'train'  # Only drop last batch during training
         )
+
+    def run(self):
+        """Run training or inference depending on the mode."""
+        if self.mode == 'train':
+            self.train()
+        elif self.mode == 'inference':
+            self.infer()
+
+    def train(self):
+        """Training loop."""
         optimizer = torch.optim.Adam(self.net.parameters(), lr=self.config.lr, amsgrad=True, weight_decay=self.config.weight_decay)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.25, patience=5)
         loss_manager = Loss_manager()
         timer = tools.time_clock()
-        print("start training" + '=' * 10)
-        best_val_loss = float('inf')
-        timer.start()
 
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"Using device: {device}")
-        self.net.to(device)
+        print("Start training" + '=' * 10)
+        best_val_loss = float('inf')
 
         losses = { 'smooth_loss': [], 'photo_loss': [], 'census_loss': [], 'msd_loss': [], 'eq_loss': [], 'oi_loss': [] }
-        # Select a specific pair of images for visualization
-        fixed_img1, fixed_img2 = next(iter(train_loader))
-        fixed_img1, fixed_img2 = fixed_img1[0].to(device).unsqueeze(0), fixed_img2[0].to(device).unsqueeze(0)
 
         for epoch in range(self.config.n_epoch):
             running_loss = 0.0
             loss_manager.prepare_epoch()
-            for i_batch, (img1, img2) in enumerate(train_loader):
-                img1, img2 = img1.to(device), img2.to(device)
-                batchsize = img1.shape[0]
 
-                self.net.train()
+            timer.start()
+            for i_batch, (img1, img2) in enumerate(self.dataloader):
+                img1, img2 = img1.to(self.device), img2.to(self.device)
+
                 optimizer.zero_grad()
-                start = torch.zeros((img1.size(0), 2, 1, 1), device=device)
-                input_dict = {
-                    'im1': img1,
-                    'im2': img2,
-                    'im1_raw': img1,
-                    'im2_raw': img2,
-                    'start': start,
-                    'if_loss': True
-                }
+
+                input_dict = self.prepare_input(img1, img2, self.device, loss_flag=True)
                 out_data = self.net(input_dict)
 
-                loss_dict = {key: out_data[key] for key in losses.keys() if key in out_data}
-                if not loss_dict:
-                    print("Error: loss_dict is empty.")
-                    continue
-
-                loss = loss_manager.compute_loss(loss_dict=loss_dict, batch_N=batchsize)
+                loss = self.calculate_loss(out_data, loss_manager, batch_size=img1.shape[0])
                 loss.backward()
                 optimizer.step()
+
                 running_loss += loss.item()
 
-                for key in losses.keys():
-                    if key in out_data:
-                        losses[key].append(out_data[key].item())
-
                 if i_batch % self.config.batch_per_print == 0:
-                    print(f"Epoch [{epoch+1}/{self.config.n_epoch}], Batch [{i_batch+1}/{len(train_loader)}], Loss: {loss.item()}")
-                    loss_values = ", ".join([f"{key.replace('_', ' ').capitalize()}: {out_data[key].item()}" for key in loss_dict])
-                    print(f"Losses: {loss_values}")
+                    print(f"Epoch [{epoch+1}/{self.config.n_epoch}], Batch [{i_batch+1}/{len(self.dataloader)}], Loss: {loss.item()}")
 
-            avg_loss = running_loss / len(train_loader)
+            # Adjust learning rate scheduler
+            avg_loss = running_loss / len(self.dataloader)
             scheduler.step(avg_loss)
             timer.end()
             print(f' === Epoch {epoch+1} use time {timer.get_during():.2f} seconds ===')
-            timer.start()
+
 
             # Save the best model
             if avg_loss < best_val_loss:
@@ -319,6 +305,40 @@ class Trainer:
             
             for param_group in optimizer.param_groups:
                 print(f"Current learning rate: {param_group['lr']}")
+    
+    def infer(self):
+        """Inference loop."""
+        for i, (img1, img2) in enumerate(tqdm(self.dataloader, desc=f"{Fore.GREEN}Inference Progress")):
+            img1, img2 = img1.to(self.device), img2.to(self.device)
+            with torch.no_grad():
+                # Use prepare_input to build the input dictionary
+                input_dict = self.prepare_input(img1, img2, self.device, loss_flag=False)
+                
+                # Run the model
+                output_dict = self.net(input_dict)
+                
+                # Save the flow output
+                flow_fw = output_dict['flow_b_out'].cpu().numpy()
+                flow_dir = os.path.join(self.config.exp_dir, 'flow_npy')
+                os.makedirs(flow_dir, exist_ok=True)
+                np.save(f'{flow_dir}/result_{i}.npy', flow_fw)
+    
+    def prepare_input(self, img1, img2, device, loss_flag=True):
+        """Prepare input dictionary for the model."""
+        start = torch.zeros((img1.size(0), 2, 1, 1), device=device)
+        return {
+            'im1': img1,
+            'im2': img2,
+            'im1_raw': img1,
+            'im2_raw': img2,
+            'start': start,
+            'if_loss': loss_flag
+        }
+
+    def calculate_loss(self, out_data, loss_manager, batch_size):
+        """Calculate the loss based on the output data."""
+        loss_dict = {key: out_data[key] for key in ['smooth_loss', 'photo_loss', 'census_loss', 'msd_loss', 'eq_loss', 'oi_loss'] if key in out_data}
+        return loss_manager.compute_loss(loss_dict=loss_dict, batch_N=batch_size)
     
     def visualize_interpolation(self, inter_flow, inter_map, epoch):
         inter_flow = np.array(inter_flow)
@@ -367,23 +387,26 @@ class Trainer:
         torch.save(model_state, path)
 
     def load_model(self):
+        """Load the model based on mode (train or inference)."""
         net_conf = UPFlow_net.config()
         net_conf.update(self.param_dict)
         net = UPFlow_net(net_conf)
 
+        # Load model weights based on mode
         if self.mode == 'inference' and self.model_path:
             state_dict = torch.load(self.model_path)
             net.load_state_dict(state_dict['state_dict'], strict=False)
-            if self.config.if_cuda:
-                net=net.cuda()
-            net.eval()
-        else:
+            net.eval()  # Set the model to evaluation mode for inference
+        elif self.mode == 'train':
             if self.pretrain_path is not None:
                 state_dict = torch.load(self.pretrain_path)
                 net.load_state_dict(state_dict['state_dict'], strict=False)
-            if self.config.if_cuda:
-                net = net.cuda()
-            net.train()
+            net.train()  # Set the model to training mode by default
+
+        # Move the model to GPU if available, otherwise keep it on CPU
+        self.device = torch.device('cuda' if torch.cuda.is_available() and self.config.if_cuda else 'cpu')
+        net.to(self.device)
+
         return net
 
     def load_training_dataset(self):
@@ -410,6 +433,7 @@ if __name__ == "__main__":
     # Set up argument parser to accept a config file as an argument
     parser = argparse.ArgumentParser(description="Train a model with parameters from a config file.")
     parser.add_argument('--config', type=str, required=True, help="Path to the JSON config file e.g. config.json")
+    parser.add_argument('--mode', type=str, choices=['train', 'inference'], required=True, help="Mode to run the model: 'train' or 'inference'")
     
     # Parse the arguments
     args = parser.parse_args()
@@ -424,10 +448,10 @@ if __name__ == "__main__":
 
     # Initialize Config and Trainer
     conf = Config(**training_param)
-    trainer = Trainer(conf, param_dict=param_dict)
+    trainer = Trainer(conf, param_dict=param_dict, mode=args.mode)
 
     # Start training
-    trainer.training()
+    trainer.run()
 
 
 """

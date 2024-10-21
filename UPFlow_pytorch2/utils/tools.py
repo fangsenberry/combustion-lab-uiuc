@@ -1255,11 +1255,11 @@ class tools():
         vgrid[:, 1, :, :] = 2.0 * vgrid[:, 1, :, :] / max(H - 1, 1) - 1.0
 
         vgrid = vgrid.permute(0, 2, 3, 1)  # B H,W,C
-        output = nn.functional.grid_sample(x, vgrid, padding_mode='zeros')
+        output = nn.functional.grid_sample(x, vgrid, padding_mode='zeros', align_corners=False)
         mask = torch.autograd.Variable(torch.ones(x.size()))
         if x.is_cuda:
             mask = mask.cuda()
-        mask = nn.functional.grid_sample(mask, vgrid, padding_mode='zeros')
+        mask = nn.functional.grid_sample(mask, vgrid, padding_mode='zeros', align_corners=False)
 
         mask[mask < 0.9999] = 0
         mask[mask > 0] = 1
@@ -1302,7 +1302,7 @@ class tools():
         vgrid = vgrid.permute(0, 2, 3, 1)  # B H,W,C
         # tools.check_tensor(x, 'x')
         # tools.check_tensor(vgrid, 'vgrid')
-        output = nn.functional.grid_sample(x, vgrid, padding_mode='zeros')
+        output = nn.functional.grid_sample(x, vgrid, padding_mode='zeros', align_corners=False)
         # mask = torch.autograd.Variable(torch.ones(x.size()))
         # if x.is_cuda:
         #     mask = mask.cuda()

@@ -17,6 +17,8 @@ from collections import deque
 import time
 from numpy.polynomial.polynomial import Polynomial
 from scipy.optimize import curve_fit
+from sklearn.linear_model import RANSACRegressor
+from sklearn.base import BaseEstimator, RegressorMixin
 
 ############################################################ CDF functions ############################################################
 def calculate_magnitude(u, v):
@@ -47,11 +49,9 @@ def plot_cdf_velocity_all_frames(u_filtered, v_filtered, num_slices, axis='y-sli
 
     # Exclude the last 10 rows for column-based slicing if 'y-slices'
     
-    u_filtered = u_filtered[:, :, :-10]  # Remove the last 10 columns for all frames
-    v_filtered = v_filtered[:, :, :-10]  # Remove the last 10 columns for all frames
+    u_filtered = u_filtered[:, :, 5:]  # Remove the first 10 columns for all frames
+    v_filtered = v_filtered[:, :, 5:]  # Remove the first 10 columns for all frames
 
-    u_filtered = np.flip(u_filtered, axis=2)  # Flip along width (axis=2)
-    v_filtered = np.flip(v_filtered, axis=2)  # Flip along width (axis=2)
 
     # Adapt based on the axis (rows or columns)
     if axis == 'x-slices':  # Column-wise slicing

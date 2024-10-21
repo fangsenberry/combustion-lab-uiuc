@@ -16,6 +16,9 @@ from tabulate import tabulate
 import torch.nn as nn
 import torch.optim as optim
 from glob import glob
+from torch.cuda.amp import autocast, GradScaler
+
+import image_preprocess
 
 
 # Define the dataset class
@@ -109,7 +112,7 @@ def setup_ddp(rank, world_size):
 def cleanup_ddp():
     dist.destroy_process_group()
 
-def train_denoiser(rank, world_size, image_dir, models_dir, model_save_path_base, model_save_path, num_epochs=50, batch_size=16, learning_rate=0.001, num_features=256):
+def train_denoiser(rank, world_size, image_dir, models_dir, model_save_path_base, model_save_path, num_epochs=50, batch_size=16, learning_rate=0.001, num_features=256, mixed_precision=False):
     try:
         setup_ddp(rank, world_size)
         device = torch.device(f"cuda:{rank}")
@@ -127,7 +130,8 @@ def train_denoiser(rank, world_size, image_dir, models_dir, model_save_path_base
 
         # Loss and optimizer
         criterion = nn.MSELoss().to(device)
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-2)
+        optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+        # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-2)
         
         lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
 
@@ -137,6 +141,11 @@ def train_denoiser(rank, world_size, image_dir, models_dir, model_save_path_base
         start_train_time = time.time()
         best_train_loss = float('inf')
         model.train()
+
+        # Initialize the GradScaler for mixed precision
+        if mixed_precision:
+            scaler = GradScaler()
+
         for epoch in range(num_epochs):
             running_loss = 0.0
             dataloader.sampler.set_epoch(epoch)  # Ensure proper shuffling for each epoch
@@ -146,15 +155,32 @@ def train_denoiser(rank, world_size, image_dir, models_dir, model_save_path_base
                 
                 # Zero the parameter gradients
                 optimizer.zero_grad()
+                # Forward pass with mixed precision (autocast)
+                if mixed_precision:
+                    with autocast():
+                        outputs = model(inputs)
+                        loss = criterion(outputs * masks.unsqueeze(1).float().to(device), targets * masks.unsqueeze(1).float().to(device))
+
+                    # Backward pass with scaled gradients
+                    scaler.scale(loss).backward()
+
+                    # Step the optimizer using the scaler
+                    scaler.step(optimizer)
+
+                    # Update the scale factor for next iteration
+                    scaler.update()
+                    
+                else:
+
                 
-                # Forward pass
-                outputs = model(inputs)
-                loss = criterion(outputs * masks.unsqueeze(1).float().to(device), targets * masks.unsqueeze(1).float().to(device))
-                
-                # Backward pass and optimization
-                loss.backward()
-                optimizer.step()
-                
+                    # Forward pass
+                    outputs = model(inputs)
+                    loss = criterion(outputs * masks.unsqueeze(1).float().to(device), targets * masks.unsqueeze(1).float().to(device))
+                    
+                    # Backward pass and optimization
+                    loss.backward()
+                    optimizer.step()
+                    
                 running_loss += loss.item() * inputs.size(0)
             
             lr_scheduler.step(running_loss)
@@ -235,8 +261,9 @@ def main():
     
     parser.add_argument('--num_features', type=int, default=256, help='Number of Channels for Conv')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
-    parser.add_argument('--image_base', type=str, default='data/noisy_images_preprocessed/A03_C_DP_30.0', help='Path to the directory of a certain image set')
-    parser.add_argument('--date', type=str, default='09-05-24', help='Date of running the model')
+    parser.add_argument('--lr', type=int, default=2e-4, help='learning rate')
+    parser.add_argument('--image_base', type=str, default='data/noisy_images_preprocessed/A05_C_DP_26.0', help='Path to the directory of a certain image set')
+    parser.add_argument('--date', type=str, default='10-14-24', help='Date of running the model')
     parser.add_argument('--cuda_devices', type=str, default='0,1,2', help='Comma-separated list of CUDA devices to use, e.g., "0,1"')
     parser.add_argument('--image_path', type=str, help='Path to the image to denoise after training')
 
@@ -249,6 +276,7 @@ def main():
     batch_size = args.batch_size
     image_base = args.image_base
     date = args.date
+    learning_rate=args.lr
 
     world_size = len(args.cuda_devices.split(','))  # Number of GPUs based on the input
 
@@ -264,7 +292,7 @@ def main():
         ["Model Save Path", model_save_path],
         ["Number of Epochs", 50],
         ["Batch Size", batch_size],
-        ["Learning Rate", 0.0001],
+        ["Learning Rate", learning_rate],
         ["Number of Features", num_features],
         ["CUDA Devices", args.cuda_devices],
     ]
@@ -274,14 +302,23 @@ def main():
     # Spawn multiple processes based on the number of GPUs specified
     mp.spawn(
         train_denoiser,
-        args=(world_size, image_dir, models_dir, model_save_path_base, model_save_path, 50, batch_size, 0.0001, num_features),
+        args=(world_size, image_dir, models_dir, model_save_path_base, model_save_path, 50, batch_size, learning_rate, num_features),
         nprocs=world_size,
         join=True
     )
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     trained_model = DenoisingCNN(num_features=num_features).to(device)
-    trained_model.load_state_dict(torch.load(model_save_path, map_location=device))
+    state_dict = torch.load(model_save_path, map_location=device, weights_only=True)
+    
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith('module.'):
+            new_state_dict[k[7:]] = v  # Remove 'module.' prefix if present
+        else:
+            new_state_dict[k] = v
+
+    trained_model.load_state_dict(new_state_dict)
 
     # Create inference directory
     inference_dir = f"{model_save_path}_inference"

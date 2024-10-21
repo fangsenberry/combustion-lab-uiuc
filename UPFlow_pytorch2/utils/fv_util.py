@@ -28,6 +28,12 @@ two_dirs_up = current_dir.parents[2]
 sys.path.append(str(two_dirs_up))
 
 import edge_detect as ed
+from tqdm import tqdm
+from skimage.metrics import structural_similarity as ssim
+import torch
+import piq
+import lpips
+import torchmetrics
 
 ########################################################################################
 class FlowConfig:
@@ -36,15 +42,10 @@ class FlowConfig:
         self.img_path = kwargs.get('img_path', r"D:\final_corrected_512-complex-27-6-24.pth_inference")
         self.dir_ext = kwargs.get('dir_ext', r'flow_npy\result_')
         self.step = kwargs.get('step', 1)
-        self.start_x = kwargs.get('start_x', 0)
-        self.end_x = kwargs.get('end_x', None)
-        self.start_y = kwargs.get('start_y', 0)
-        self.end_y = kwargs.get('end_y', None)
-        self.reverse_flow = kwargs.get('reverse_flow', False)
-        self.binary_image_analysis = kwargs.get('binary_image_analysis', False)
-        self.warp_analysis = kwargs.get('warp_analysis', False)
         self.custom_range = kwargs.get('custom_range', 25)
-        self.hdf5_path = kwargs.get('hdf5_path', 'flow_data.h5')
+        self.array_save_path = kwargs.get('array_save_path', 'flow_data.npz')
+        self.file_format = kwargs.get('file_format', 'npz')
+        self.image_save_range = kwargs.get('image_save_range', 35)
 
     def save(self, file_path):
         with open(file_path, 'wb') as f:
@@ -55,28 +56,106 @@ class FlowConfig:
         with open(file_path, 'rb') as f:
             kwargs = pickle.load(f)
         return FlowConfig(**kwargs)
-
+########################################################################################
 class FlowInitialization:
     def __init__(self, config):
         self.config = config
         self.data = {}
+        self.single_image = None
+        self.binary_image = None
+        self.warped_image = None
+        self.file_format = self.config.file_format
+        self.step= self.config.step
+        self.image_save_range = self.config.image_save_range
 
-    @staticmethod
-    def save_to_hdf5(file_path, **kwargs):
-        with h5py.File(file_path, 'w') as f:
-            for key, value in kwargs.items():
-                if value is not None:
-                    f.create_dataset(key, data=value)
+    def save_data(self, file_path, append=False, **arrays):
+        """
+        Save data to either NPZ or HDF5 format.
+        
+        Args:
+            file_path: Path to save the file.
+            file_format: 'npz' or 'hdf5', depending on the desired format.
+            arrays: Data to be saved as key-value pairs.
+        """
+        total_keys = len(arrays)  # Count total number of datasets to save
+        with tqdm(total=total_keys, desc=f"Saving data to {self.file_format.upper()} file", unit="dataset") as pbar:
+            if self.file_format == 'npz':
+                np.savez_compressed(file_path, **arrays)
+                pbar.update(total_keys)  # Since all data is saved at once, mark all as done
+            elif self.file_format == 'hdf5':
+                # Save data to HDF5 file
+                mode = 'a' if append else 'w'
+                with h5py.File(file_path, mode) as f:
+                    for key, value in arrays.items():
+                        if value is not None:
+                            if append and key in f:
+                                # If appending, delete existing dataset before writing
+                                del f[key]
+                            f.create_dataset(key, data=value)
+                            pbar.update(1)  # Update progress bar after saving each dataset
+            else:
+                raise ValueError(f"Unsupported file format: {self.file_format}")
+        print(f"Data saved to {file_path}")
 
-    @staticmethod
-    def load_from_hdf5(file_path):
+    ### Unified Load Function for NPZ and HDF5 ###
+    def load_data(self, file_path):
+        """
+        Load data from either NPZ or HDF5 format.
+
+        Args:
+            file_path: Path to the file to be loaded.
+            file_format: 'npz' or 'hdf5', depending on the desired format.
+
+        Returns:
+            A dictionary with the loaded data.
+        """
         data = {}
-        with h5py.File(file_path, 'r') as f:
-            for key in f.keys():
-                data[key] = np.array(f[key])
+        if self.file_format == 'npz':
+            loaded_data = np.load(file_path)
+            data = {key: loaded_data[key] for key in loaded_data}
+        elif self.file_format == 'hdf5':
+            with h5py.File(file_path, 'r') as f:
+                for key in f.keys():
+                    data[key] = np.array(f[key])
+        else:
+            raise ValueError(f"Unsupported file format: {self.file_format}")
+        print(f"Data loaded from {file_path}")
         return data
+
+    ### Centralized Data Preparation Method ###
+    def process_and_save_data(self):
+        """
+        Process data and save it in either NPZ or HDF5 format.
+
+        Args:
+            file_format: The format to save the data in ('npz' or 'hdf5').
+        """
+        flow_data = self.create_flow_arrays()
+        print(f"Flow data arrays created with shapes: {[(key, value.shape) for key, value in flow_data.items()]}")
+
+        # Prepare arrays for saving
+        arrays_to_save = {
+            'flow_vis_map': flow_data['flow_vis_array'],
+            'u_vectors': flow_data['u_array'],
+            'v_vectors': flow_data['v_array'],
+            'original_image_array': flow_data['original_image_array'],
+            'warped_image_array': flow_data['warped_image_array'],
+            'binary_image_array': flow_data['binary_image_array'],
+            'x_positions': flow_data['x'],
+            'y_positions': flow_data['y']
+        }
+
+        # Determine file path and save
+        file_path = os.path.join(self.config.trial_path, self.config.array_save_path)
+        self.save_data(file_path, **arrays_to_save)
+        self.save_warped_images(flow_data['warped_image_array'])
+
     
-    def plot_and_save_losses(self, loss_data_file=None, log_scale=True):
+    @staticmethod
+    def numerical_sort_key(file_name):
+        return int(file_name.split('_')[-1].split('.')[0])
+        
+    def plot_and_save_losses(self, log_scale=True):
         """
         Plot and save loss curves for each specified loss in the data file.
 
@@ -84,174 +163,78 @@ class FlowInitialization:
             loss_data_file (str): The name of the file containing the loss data. Defaults to 'loss_data.pkl' in the trial path.
             log_scale (bool): If True, the y-axis will be plotted on a logarithmic scale. Default is True.
         """
-        # Default loss data file if not provided
-        if loss_data_file is None:
-            loss_data_file = os.path.join(self.config.trial_path, 'loss_data.pkl')
-        
+        # Default to 'loss_data.pkl' if no file is provided
+        loss_data_file = os.path.join(self.config.trial_path, 'loss_data.pkl')
+
+        # Check if the loss data file exists
         if not os.path.exists(loss_data_file):
-            print(f"Loss data could not be found for this trial path: {self.config.trial_path}")
+            print(f"Loss data could not be found for this trial path: {loss_data_file}")
             return  # Exit the function if the file does not exist
-        
-        # Create folder to save the plots
-        folder_path = os.path.join(self.config.trial_path, 'loss_info')
+
+        # Create a folder to save the plots
+        folder_path = os.path.join(self.config.trial_path, 'loss_plots')
         os.makedirs(folder_path, exist_ok=True)
 
-        # Load loss data
-        with open(loss_data_file, 'rb') as f:
-            loaded_loss_data = pickle.load(f)
+        # Load loss data from the file
+        try:
+            with open(loss_data_file, 'rb') as f:
+                loss_data = pickle.load(f)
+        except Exception as e:
+            print(f"Error loading loss data from {loss_data_file}: {e}")
+            return
 
-        # Extract the keys dynamically
-        loss_keys = list(loaded_loss_data.keys())
+        # Ensure loss_data is a dictionary
+        if not isinstance(loss_data, dict):
+            print(f"Invalid loss data format in {loss_data_file}")
+            return
 
         # Initialize a list to accumulate valid loss data for total loss calculation
         valid_loss_data = []
 
-        # Iterate over each loss type
-        for key in loss_keys:
-            losses = loaded_loss_data[key]
-
-            # Skip empty losses
+        # Iterate over each loss key in the data and plot the corresponding loss curve
+        for loss_type, losses in loss_data.items():
+            # Skip if there are no losses
             if not losses:
                 continue
 
-            # Plot and save the loss curve
-            plt.figure(figsize=(10, 6))
-            plt.plot(losses, label=key)
-            plt.xlabel('Batch')
-            plt.ylabel(key)
-            if log_scale:
-                plt.yscale('log')
-            plt.title(f'{key} Over Time')
-            plt.legend()
-            # plt.grid(True)
-            plt.savefig(os.path.join(folder_path, f'{key}.png'))
-            # plt.show()
-            plt.close()
+            # Use the helper method to plot each individual loss
+            self._plot_single_loss(loss_type, losses, log_scale, folder_path)
 
-            # Append to valid loss data for total loss calculation
+            # Collect the loss data for total loss calculation
             valid_loss_data.append(losses)
 
-        # Calculate and plot total loss if there are valid losses
+        # If valid losses were found, calculate and plot the total loss
         if valid_loss_data:
-            total_losses = [
-                sum(loss_tuple) for loss_tuple in zip(*valid_loss_data)
-            ]
+            # Zip the losses together and sum them to compute total losses per batch
+            total_losses = [sum(losses_per_batch) for losses_per_batch in zip(*valid_loss_data)]
 
-            if any(total_losses):  # Check if total_losses contains any non-zero values
-                plt.figure(figsize=(10, 6))
-                plt.plot(total_losses, label='total_loss')
-                plt.xlabel('Batch')
-                plt.ylabel('Total Loss')
-                if log_scale:
-                    plt.yscale('log')
-                plt.title('Total Loss Over Time')
-                plt.legend()
-                # plt.grid(True)
-                plt.savefig(os.path.join(folder_path, 'total_loss.png'))
-                # plt.show()
-                plt.close()
+            # Plot and save the total loss curve using the helper method
+            if any(total_losses):  # Ensure there are non-zero losses
+                self._plot_single_loss('Total Loss', total_losses, log_scale, folder_path)
 
-    def process_and_save_data(self):
-        flow_vis_list, self.data['img_list'], self.data['warped_img_list'], self.data['gradient_list'], self.data['binary_image_list'], self.data['x'], self.data['y'] = self.create_flow_lists(
-            self.config.trial_path, 
-            self.config.img_path, 
-            self.config.dir_ext, 
-            step=self.config.step, 
-            start_x=self.config.start_x, 
-            end_x=self.config.end_x, 
-            start_y=self.config.start_y, 
-            end_y=self.config.end_y, 
-            reverse_flow=self.config.reverse_flow, 
-            binary_image=self.config.binary_image_analysis, 
-            warp=self.config.warp_analysis, 
-            custom_range=self.config.custom_range
-        )
-
-        self.data['flow_vis_images'] = [flow_vis for flow_vis, _, _ in flow_vis_list]
-        self.data['u_vectors'] = [u for _, u, _ in flow_vis_list]
-        self.data['v_vectors'] = [v for _, _, v in flow_vis_list]
-
-        self.save_to_hdf5(self.config.hdf5_path, **self.data)
-
-    def load_data(self):
-        self.data = self.load_from_hdf5(self.config.hdf5_path)
+        print(f"Loss plots saved in {folder_path}")
 
     @staticmethod
-    def manual_crop(image, start_x=0, end_x=None, start_y=0, end_y=None):
-        if image.ndim == 3:
-            _, height, width = image.shape
-        else:
-            height, width = image.shape
+    def _plot_single_loss(loss_type, losses, log_scale, save_dir):
+        """
+        Helper function to plot and save individual loss curves.
 
-        end_x = width if end_x is None else end_x
-        end_y = height if end_y is None else end_y
-
-        start_x = max(0, start_x)
-        end_x = min(width, end_x)
-        start_y = max(0, start_y)
-        end_y = min(height, end_y)
-
-        if image.ndim == 3:
-            return image[:, start_y:end_y, start_x:end_x]
-        else:
-            return image[start_y:end_y, start_x:end_x]
-
-    @staticmethod
-    def warp_image_skimage(image, flow):
-        h, w = image.shape
-        if flow.shape != (2, h, w):
-            raise ValueError(f"Expected flow shape (2, {h}, {w}), but got {flow.shape}")
-
-        x, y = np.meshgrid(np.arange(w), np.arange(h))
-        map_x, map_y = x + flow[0], y + flow[1]
-        coords = np.stack([map_y, map_x], axis=0)
-
-        return warp(image, coords, mode='wrap', order=3)
-
-    @staticmethod
-    def normalize_image(image, target_mean, target_std):
-        image = image.astype(np.float32)
-        image_mean, image_std = np.mean(image), np.std(image)
-        normalized_image = (image - image_mean) / image_std * target_std + target_mean
-        return np.clip(normalized_image, 0, 255).astype(np.uint8)
-
-    @staticmethod
-    def convert_to_uint8(image):
-        image = (image - image.min()) / (image.max() - image.min()) * 255
-        return image.astype(np.uint8)
-
-    @staticmethod
-    def compute_gradient(image1, image2):
-        gradient = image2.astype(np.float32) - image1.astype(np.float32)
-        return gradient
-
-    @staticmethod
-    def gradient_to_heatmap(gradient, global_min, global_max):
-        normalized_gradient = (gradient - global_min) / (global_max - global_min)
-        heatmap = cm.coolwarm(normalized_gradient)  # Use 'coolwarm' colormap
-        heatmap = (heatmap * 255).astype(np.uint8)
-        return heatmap
-
-    @staticmethod
-    def save_heatmap_with_colorbar(heatmap, global_min, global_max, filename):
-        # Create a figure and axis
-        fig, ax = plt.subplots(figsize=(10, 8))
-
-        # Display the heatmap
-        img = ax.imshow(heatmap, cmap='coolwarm', vmin=global_min, vmax=global_max)
-        ax.axis('off')  # Turn off the axis for the heatmap
-
-        # Create an axis on the right side of the heatmap with the same height
-        divider = make_axes_locatable(ax)
-        cbar_ax = divider.append_axes("right", size="5%", pad=0.05)
-
-        # Add the colorbar to the new axis
-        cbar = plt.colorbar(img, cax=cbar_ax)
-        cbar.ax.tick_params(labelsize=8)  # Adjust the size of the color bar ticks
-        cbar.set_label('Gradient Intensity', size=8)
-        
-        # Save the figure
-        plt.savefig(filename, bbox_inches='tight', pad_inches=0.1)
+        Parameters:
+            loss_type (str): The type/name of the loss (used for labels and title).
+            losses (list): The loss values over time (typically across batches).
+            log_scale (bool): Whether to use logarithmic scaling for the y-axis.
+            save_dir (str): Directory to save the plot.
+        """
+        plt.figure(figsize=(10, 6))
+        plt.plot(losses, label=loss_type)
+        plt.xlabel('Batch')
+        plt.ylabel(loss_type)
+        if log_scale:
+            plt.yscale('log')
+        plt.title(f'{loss_type} Over Time')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(os.path.join(save_dir, f'{loss_type}.png'))
         plt.close()
 
     @staticmethod
@@ -308,138 +291,7 @@ class FlowInitialization:
             raise ValueError(f"Invalid flow visualization type: {type}")
         return color_map
 
-    @staticmethod
-    def flow_params(flow, step=10, start_x=0, end_x=None, start_y=0, end_y=None, reverse_flow=False, flow_vis_type='basic'):
-        """Extract flow parameters for visualization."""
-        u = flow[0, ::step, ::step]
-        v = flow[1, ::step, ::step]
-
-        if reverse_flow:
-            u, v = -u, -v
-            
-
-        flow_vis = FlowInitialization.visualize_flow(flow, type=flow_vis_type)
-
-        return flow_vis, u, v
-
-    @staticmethod
-    def plot_flow_vectors(flow_vis_list, img_list, binary_image_list, x, y, start_x=0, end_x=None, start_y=0, end_y=None, step=10):
-        for idx in range(len(flow_vis_list)):
-            flow_vis, u, v = flow_vis_list[idx]
-            original_img = img_list[idx]
-            binary_img = binary_image_list[idx]
-
-            # Crop the images
-            cropped_img = FlowInitialization.manual_crop(original_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
-            cropped_binary_img = FlowInitialization.manual_crop(binary_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
-
-            plt.figure(figsize=(10, 10))
-            plt.imshow(cropped_img, cmap='gray')
-
-            # Determine cropping bounds
-            if end_x is None:
-                end_x = original_img.shape[1]
-            if end_y is None:
-                end_y = original_img.shape[0]
-
-            # Plot flow vectors only where binary_img is non-zero (indicating fuel regions)
-            for i in range(0, cropped_img.shape[0], step):
-                for j in range(0, cropped_img.shape[1], step):
-                    u_idx = (i + start_y) // step
-                    v_idx = (j + start_x) // step
-                    if u_idx < u.shape[0] and v_idx < u.shape[1] and cropped_binary_img[i, j] > 0:
-                        plt.arrow(j, i, u[u_idx, v_idx], v[u_idx, v_idx], color='red', head_width=1, head_length=1)
-
-            plt.axis('off')
-            plt.imshow(cropped_img, cmap='gray')
-            plt.tight_layout()
-            plt.show()
-            plt.close()
-
-    @staticmethod
-    def plot_flow_vectors_as_video(flow_vis_list, img_list, binary_image_list, x, y, start_x=0, end_x=None, start_y=0, end_y=None, step=10, video_filename='flow_vectors.mp4'):
-        fig, ax = plt.subplots(figsize=(10, 10))
-
-        # Determine the cropping bounds for consistent plot size
-        if end_x is None:
-            end_x = img_list[0].shape[1]
-        if end_y is None:
-            end_y = img_list[0].shape[0]
-
-        def update(idx):
-            ax.clear()
-            flow_vis, u, v = flow_vis_list[idx]
-            original_img = img_list[idx]
-            binary_img = binary_image_list[idx]
-
-            # Crop the images
-            cropped_img = FlowInitialization.manual_crop(original_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
-            cropped_binary_img = FlowInitialization.manual_crop(binary_img, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y)
-
-            ax.imshow(cropped_img, cmap='gray')
-
-            # Plot flow vectors only where binary_img is non-zero (indicating fuel regions)
-            for i in range(0, cropped_img.shape[0], step):
-                for j in range(0, cropped_img.shape[1], step):
-                    u_idx = (i + start_y) // step
-                    v_idx = (j + start_x) // step
-                    if u_idx < u.shape[0] and v_idx < u.shape[1] and cropped_binary_img[i, j] > 0:
-                        ax.arrow(j, i, u[u_idx, v_idx], v[u_idx, v_idx], color='red', head_width=1, head_length=1)
-
-            ax.axis('off')
-            ax.set_xlim(0, cropped_img.shape[1])
-            ax.set_ylim(cropped_img.shape[0], 0)
-
-        anim = FuncAnimation(fig, update, frames=len(flow_vis_list), repeat=False)
-        Writer = writers['ffmpeg']
-        writer = Writer(fps=5, metadata=dict(artist='Me'), bitrate=1800)
-        anim.save(video_filename, writer=writer)
-
-    @staticmethod
-    def plot_flow_and_colorwheel(flow_vis, binary_image=None):
-        # Apply the binary mask to the flow visualization
-        if binary_image is not None:
-            masked_flow_vis = cv2.bitwise_and(flow_vis, flow_vis, mask=binary_image)
-        else:
-            masked_flow_vis = flow_vis
-
-        fig = plt.figure(figsize=(20, 10))
-        gs = gridspec.GridSpec(1, 2, width_ratios=[3, 1])
-
-        # Plot the optical flow RGB image over the binary image
-        ax0 = plt.subplot(gs[0])
-        ax0.imshow(masked_flow_vis)
-        ax0.set_title('Optical Flow', fontsize=18)
-        ax0.axis('off')
-
-        # Create and plot the color wheel
-        ax1 = plt.subplot(gs[1])
-        hsv_colorwheel = np.zeros((256, 256, 3), dtype=np.uint8)
-        for i in range(256):
-            for j in range(256):
-                dy = i - 128
-                dx = j - 128
-                angle = np.arctan2(dy, dx)
-                magnitude = np.sqrt(dx**2 + dy**2)
-                hue = (angle * 180 / np.pi / 2 + 180) % 180
-                hsv_colorwheel[i, j, 0] = hue
-                hsv_colorwheel[i, j, 1] = 255
-                hsv_colorwheel[i, j, 2] = np.clip(magnitude * (255 / 128), 0, 255)
-
-        colorwheel = cv2.cvtColor(hsv_colorwheel, cv2.COLOR_HSV2BGR)
-        ax1.imshow(colorwheel)
-        ax1.set_title('Colorwheel: Hue (Direction), Intensity (Magnitude)', fontsize=18)
-        ax1.axis('off')
-
-        plt.savefig('flow_and_colorwheel.png', bbox_inches='tight', pad_inches=0)
-        plt.close()
-
-    @staticmethod
-    def numerical_sort_key(file_name):
-        return int(file_name.split('_')[-1].split('.')[0])
-
-    @staticmethod
-    def flow_checks(flow):
+    def flow_checks(self, flow):
         if flow.ndim == 4:
             # Assuming the shape is (N, 2, H, W) and we take the first element (N should be 1 for batch size 1)
             flow = flow[0]
@@ -450,242 +302,525 @@ class FlowInitialization:
 
         return flow
 
-    def create_flow_lists(self, directory, im_dir, base, step=10, start_y=0, end_y=None, start_x=0, end_x=None, reverse_flow=False, binary_image=False, warp=False, custom_range=25, flow_vis_type='basic'):
-        flow_vis_list = []
-        img_list = []
-        warped_img_list = []
-        gradient_list = []
-        binary_image_list = []
+    def flow_params(self, flow):
+        u = flow[0, ::self.step, ::self.step]
+        v = flow[1, ::self.step, ::self.step]
+        flow_vis = FlowInitialization.visualize_flow(flow)
+        return flow_vis, u, v
 
-        target_height = None
-        target_width = None
+    def _get_image_files(self):
+        return sorted([f for f in os.listdir(self.config.img_path) if f.endswith('.png')],
+                      key=FlowInitialization.numerical_sort_key)
 
-        image_files = sorted([f for f in os.listdir(im_dir) if f.endswith('.png')], key=FlowInitialization.numerical_sort_key)
-        if custom_range == 'end':
-            custom_range = len(image_files) - 1
+    def _load_flow(self, idx):
+        filepath = os.path.join(self.config.trial_path, f"{self.config.dir_ext}{idx}.npy")
+        flow = self.flow_checks(np.load(filepath))  # Use self to call the instance method
+        flow_vis, u, v = self.flow_params(flow)     # Use self to call the instance method
+        return flow, flow_vis, u, v
 
-        for idx in range(custom_range):
-            # Load flow files
-            filepath = os.path.join(directory, f"{base}{idx}.npy")
-            flow = FlowInitialization.flow_checks(np.load(filepath))
+    def _process_image(self, image_files, idx):
+        img_path = os.path.join(self.config.img_path, image_files[idx])
+        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+        
+        # Ensure that self.single_image is assigned here
+        single_image = np.clip((img - np.mean(img)) + 128, 0, 255).astype(np.uint8)
+        binary_image= self._apply_binary_segmentation(single_image)
+        return single_image, binary_image
+    
+    def _apply_binary_segmentation(self, image):
+        adaptive_thresh = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
+                                                cv2.THRESH_BINARY, 35, 7)
+        kernel1 = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        kernel2 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        eroded_image = cv2.erode(adaptive_thresh, kernel1, iterations=1)
+        dilated_image = cv2.dilate(eroded_image, kernel2, iterations=1)
+        return cv2.bitwise_not(dilated_image)
 
-            # Determine target size from the first flow
-            if idx == 0:
-                target_height, target_width = flow.shape[1], flow.shape[2]
-                y, x = np.mgrid[0:target_height:step, 0:target_width:step]
+    def warp_image_skimage(self, image, flow):
+        """
+        Warp the given image using the provided optical flow.
 
-            flow_vis, u, v = FlowInitialization.flow_params(flow, step, start_x=start_x, end_x=end_x, start_y=start_y, end_y=end_y, reverse_flow=reverse_flow, flow_vis_type=flow_vis_type)
-            flow_vis_list.append((flow_vis, u, v))
+        Args:
+            image (numpy array): The image to warp.
+            flow (numpy array): The optical flow used for warping.
 
-            # Load and process images
-            img_path = os.path.join(im_dir, image_files[idx])
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE).astype(np.uint8)
-            # Set image to have a mean of 127
-            img = (img - np.mean(img) + 127).clip(0, 255)
+        Returns:
+            numpy array: The warped image.
+        """
+        h, w = image.shape  # Now using the passed 'image' argument
+        if flow.shape != (2, h, w):
+            raise ValueError(f"Expected flow shape (2, {h}, {w}), but got {flow.shape}")
+        
+        x, y = np.meshgrid(np.arange(w), np.arange(h))
+        map_x, map_y = x + flow[0], y + flow[1]
+        coords = np.stack([map_y, map_x], axis=0)
 
-            # Convert to 8-bit and perform segmentation
-            if binary_image:
-                
-                # _, bin_im, _, _ = ed.lig_segment(img_path, canny_threshold1=40, canny_threshold2=100, min_area=10, max_area=1000, k=3, plot_kmeans=None)
-                # Apply adaptive thresholding (Mean)
-                img = img.astype(np.uint8)  # Convert back to uint8 (8-bit) for OpenCV operations
-                adaptive_thresh_mean = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
-                                                            cv2.THRESH_BINARY, 35, 7)
+        warped_image = warp(image, coords, mode='reflect', order=3)
+    
+        # Now multiply by 255 to get it back into the [0, 255] range
+        warped_image = warped_image * 255.0  # Rescale to [0, 255]
 
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))  # A small 3x3 kernel
-                kernel2= cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))  # A small 3x3 kernel
+        return warped_image.astype(np.uint8)
 
-                # Perform slight dilation
-                dilated_image = cv2.erode(adaptive_thresh_mean, kernel, iterations=1)  # 'iterations=1' means slight dilation
-                dilated_image = cv2.dilate(dilated_image, kernel2, iterations=1)  # 'iterations=1' means slight dilation
-                bin_im = dilated_image
-                bin_im= cv2.bitwise_not(bin_im)
+    def _warp_lists(self, idx, image_list):
+        if idx > 0:
+            prev_flow = self.flow_checks(np.load(os.path.join(self.config.trial_path, f"{self.config.dir_ext}{idx - 1}.npy")))
+            self.warped_image = self.warp_image_skimage(image_list[idx-1], prev_flow)
+        else:
+            self.warped_image = self.single_image
 
-                cropped_bin_im = cv2.resize(bin_im, (target_width, target_height))
-                binary_image_list.append(cropped_bin_im)
+    def save_warped_images(self, warped_img_array):
+        """
+        Save a specified number of warped images from the warped image array.
 
-            # Resize/crop the image and binary image to the target dimensions
-            cropped_img = cv2.resize(img, (target_width, target_height))
-
-            img_list.append(cropped_img)
-
-            if idx > 0 and warp:
-                prev_flow_path = os.path.join(directory, f"{base}{idx - 1}.npy")
-                prev_flow = FlowInitialization.flow_checks(np.load(prev_flow_path))
-                warped_img = FlowInitialization.warp_image_skimage(img_list[idx - 1], prev_flow)
-                warped_img_list.append(warped_img)
-
-                # Compute the gradient between the warped image and the current image
-                gradient = FlowInitialization.compute_gradient(cropped_img, warped_img)
-                gradient_list.append(gradient)
-            else:
-                warped_img_list.append(cropped_img)
-                gradient_list.append(np.zeros_like(cropped_img))  # No gradient for the first frame
-
-        return flow_vis_list, img_list, warped_img_list, gradient_list, binary_image_list, x, y
-
-    def save_warped_images(self, warped_img_list):
+        Parameters:
+            warped_img_array (numpy array): Array containing warped images.
+            num_images_to_save (int, optional): The number of images to save. If None, all images are saved. Default is None.
+        """
         folder_path = os.path.join(self.config.trial_path, 'warped_images')
         os.makedirs(folder_path, exist_ok=True)
 
-        for i, warped_img in enumerate(warped_img_list):
+        # Determine how many images to save
+        num_images = warped_img_array.shape[0]
+        if self.image_save_range is not None:
+            num_images = min(num_images, self.image_save_range)
+
+        for i in range(num_images):
+            warped_img = warped_img_array[i]
+            
             if warped_img.dtype != np.uint8:
-                warped_img = FlowInitialization.convert_to_uint8(warped_img)
+                warped_img = self.convert_to_uint8(warped_img)
+            
             img_path = os.path.join(folder_path, f'warped_image_{i}.png')
             Image.fromarray(warped_img).save(img_path)
 
-    def generate_global_heatmaps(self, gradient_list):
-        folder_path = os.path.join(self.config.trial_path, 'gradient_heatmaps')
-        os.makedirs(folder_path, exist_ok=True)
-
-        # Combine all gradients
-        all_gradients = np.concatenate([gradient.flatten() for gradient in gradient_list])
-        absolute_gradients = np.abs(all_gradients)
-
-        # Compute global min and max
-        global_min = np.min(all_gradients)
-        global_max = np.max(all_gradients)
-        # print(f"Global min: {global_min}, Global max: {global_max}")
-
-        # Compute average of absolute gradients
-        average_absolute_gradient = np.mean(absolute_gradients)
-        # print(f"Average of the absolute gradients: {average_absolute_gradient}")
-
-        # Generate and save heatmap images
-        for i, gradient in enumerate(gradient_list):
-            heatmap = FlowInitialization.gradient_to_heatmap(gradient, global_min, global_max)
-            filename = os.path.join(folder_path, f"gradient_{i}.png")
-            FlowInitialization.save_heatmap_with_colorbar(heatmap, global_min, global_max, filename)
+        print(f"{num_images} warped images saved in: {folder_path}")
     
-    def average_heatmaps_with_confidence_intervals(self, gradient_list):
-        folder_path = os.path.join(self.config.trial_path, 'average_heatmaps_2D')
-        os.makedirs(folder_path, exist_ok=True)
+    def create_flow_arrays(self):
+        flow_vis_list, u_vectors, v_vectors, img_list, warped_img_list, binary_image_list = [], [], [], [], [], []
 
-        # Calculate the mean and standard deviation per pixel across all frames
-        absolute_gradients = np.abs(np.array(gradient_list))
-        mean_error_per_pixel = np.mean(absolute_gradients, axis=0)
-        std_dev_per_pixel = np.std(absolute_gradients, axis=0)
+        image_files = self._get_image_files()
+        if self.config.custom_range == 'end':
+                custom_range = len(image_files)  # This converts 'end' to the actual number of files
+        else:
+            custom_range = int(self.config.custom_range)  # Ensure custom_range is converted to an integer
 
-        # Calculate MSE and RMSE
-        mse_error_per_pixel = np.mean(absolute_gradients ** 2, axis=0)
-        overall_mse = np.mean(mse_error_per_pixel)
-        overall_rmse = np.sqrt(overall_mse)
+        # Process each image within the custom range
+        print(custom_range)
+        with tqdm(total=custom_range, desc="Processing Images and Flow Files", unit="file") as pbar:
+            for idx in range(custom_range):
+                flow_file_path = os.path.join(self.config.trial_path, f"{self.config.dir_ext}{idx}.npy")
+                if not os.path.exists(flow_file_path):
+                    break
+                else:
+                    flow, flow_vis, u, v = self._load_flow(idx)
 
-        # Save the 2D heatmap of the mean error
-        global_min = np.min(mean_error_per_pixel)
-        global_max = np.max(mean_error_per_pixel)
-        heatmap = self.gradient_to_heatmap(mean_error_per_pixel, global_min, global_max)
-        heatmap_filename = os.path.join(folder_path, "mean_error_heatmap.png")
-        self.save_heatmap_with_colorbar(heatmap, global_min, global_max, heatmap_filename)
+                if idx == 0:
+                    target_height, target_width = flow.shape[1], flow.shape[2]
+                    self.y, self.x = np.mgrid[0:target_height:self.step, 0:target_width:self.step]
 
-        # Overlay standard deviation contours on the heatmap
-        fig, ax = plt.subplots(figsize=(10, 8))
-        img = ax.imshow(mean_error_per_pixel, cmap='coolwarm', vmin=global_min, vmax=global_max)
-        ax.axis('off')
+                self.single_image, self.binary_image=self._process_image(image_files, idx)
+                flow_vis_list.append(flow_vis)
+                u_vectors.append(u)
+                v_vectors.append(v)
+                img_list.append(self.single_image)
+                binary_image_list.append(self.binary_image)
+                self._warp_lists(idx, img_list)
+
+                warped_img_list.append(self.warped_image)
+                pbar.update(1)
+
+        # Convert lists to numpy arrays
+        warped_img_array = np.array(warped_img_list)-np.mean(np.array(warped_img_list))+128
+        warped_img_array = np.clip(warped_img_array, 0, 255).astype(np.uint8)
         
-        # Overlay standard deviation as contours
-        contour_levels = np.linspace(np.min(std_dev_per_pixel), np.max(std_dev_per_pixel), 10)
-        cs = ax.contour(std_dev_per_pixel, levels=contour_levels, colors='black', linewidths=0.5)
-        ax.clabel(cs, inline=1, fontsize=8, fmt='%1.2f')
+        arrays = {
+            'flow_vis_array': np.array(flow_vis_list),
+            'u_array': np.array(u_vectors),
+            'v_array': np.array(v_vectors),
+            'original_image_array': np.array(img_list),
+            'warped_image_array': warped_img_array,
+            'binary_image_array': np.array(binary_image_list),
+            'x': self.x,
+            'y': self.y
+        }
 
-        # Add colorbar for the mean error heatmap
+        return arrays
+    
+    @staticmethod
+    def normalize_image(image, target_mean, target_std):
+        image = image.astype(np.float32)
+        image_mean, image_std = np.mean(image), np.std(image)
+        normalized_image = (image - image_mean) / image_std * target_std + target_mean
+        return np.clip(normalized_image, 0, 255).astype(np.uint8)
+    
+    @staticmethod
+    def convert_to_uint8(image):
+        image = (image - image.min()) / (image.max() - image.min()) * 255
+        return image.astype(np.uint8)
+    
+    def run_save_case(self):
+        self.process_and_save_data()
+        self.plot_and_save_losses()
+
+    def load_and_display_data(self):
+        file_path = os.path.join(self.config.trial_path, self.config.array_save_path)
+        self.data = self.load_data(file_path)
+        print(f"Loaded data keys: {self.data.keys()}")
+    
+    def run_gradient_calculations(self):
+        self.load_and_display_data()
+        gradient_analysis = GradientAnalysis(self)
+        # gradient_analysis.generate_global_heatmaps()
+        # gradient_analysis.average_heatmaps_with_confidence_intervals()
+        
+        # Save SSIM maps
+        # gradient_analysis.generate_dssim_heatmaps()
+        gradient_analysis.compute_metric(gradient_analysis.compute_lpips, 'LPIPS')
+        gradient_analysis.generate_heatmaps('LPIPS', gradient_analysis.lpips_maps, 'magma', 'LPIPS Value')
+        # gradient_analysis.generate_msssim_heatmaps()
+        
+
+
+    
+class GradientAnalysis:
+    def __init__(self, flow_case):
+        self.warped_image_array = flow_case.data['warped_image_array']
+        self.original_image_array = flow_case.data['original_image_array']
+        self.global_min, self.global_max = None, None
+        self.image_save_range = flow_case.image_save_range
+        self.gradient_array = None
+        self.trial_path = flow_case.config.trial_path
+        self.ssim_maps = []
+        self.dssim_maps = []
+        self.lpips_maps = []
+        self.msssim_maps = []
+        self.lpips_values = []
+        self.msssim_values = []
+        if len(self.original_image_array) > 0:
+            self.image_height, self.image_width = self.original_image_array[0].shape[:2]
+
+    def compute_gradient(self):
+        """
+        Compute the gradient between the original and warped images across all frames.
+
+        Args:
+            img_array (numpy array): Original image array (shape: num_frames x H x W).
+            warped_img_array (numpy array): Warped image array (shape: num_frames x H x W).
+
+        Returns:
+            numpy array: Gradient array (shape: num_frames x H x W).
+        """
+        return self.warped_image_array.astype(np.float32) - self.original_image_array.astype(np.float32)
+
+    def gradient_to_heatmap(self, gradient):
+        normalized_gradient = (gradient - self.global_min) / (self.global_max - self.global_min)
+        heatmap = cm.coolwarm(normalized_gradient)  # Use 'coolwarm' colormap
+        heatmap = (heatmap * 255).astype(np.uint8)
+        return heatmap
+
+    
+    def save_heatmap_with_colorbar(self, heatmap, filename):
+        fig, ax = plt.subplots(figsize=(10, 8))
+        img = ax.imshow(heatmap, cmap='coolwarm', vmin=self.global_min, vmax=self.global_max)
+        ax.axis('off')
+
         divider = make_axes_locatable(ax)
         cbar_ax = divider.append_axes("right", size="5%", pad=0.05)
         cbar = plt.colorbar(img, cax=cbar_ax)
         cbar.ax.tick_params(labelsize=8)
         cbar.set_label('Gradient Intensity', size=8)
+
+        plt.savefig(filename, bbox_inches='tight', pad_inches=0.1)
+        plt.close()
+
+    def generate_global_heatmaps(self):
+        """
+        Generate heatmaps for gradients computed between original and warped images
+        """
+        folder_path = os.path.join(self.trial_path, 'gradient_heatmaps')
+        os.makedirs(folder_path, exist_ok=True)
+
+        # Compute gradient
+        self.gradient_array = self.compute_gradient()
+        # Flatten and find global min and max gradients
+        all_gradients = self.gradient_array.flatten()
+        self.global_min = np.min(all_gradients)
+        self.global_max = np.max(all_gradients)
+
+        # Generate heatmaps for each frame
+        for i in range(self.image_save_range):  # Assuming gradient_array is (num_frames, H, W)
+            heatmap = self.gradient_to_heatmap(self.gradient_array[i])
+            filename = os.path.join(folder_path, f"gradient_{i}.png")
+            self.save_heatmap_with_colorbar(heatmap, filename)
+
+    def average_heatmaps_with_confidence_intervals(self):
+        """
+        Generate average heatmap with confidence intervals for gradient between original and warped images.
         
-        # Save the figure with contours
+        Args:
+            img_array (numpy array): Original image array.
+            warped_img_array (numpy array): Warped image array.
+        """
+        folder_path = os.path.join(self.trial_path, 'average_heatmaps_2D')
+        os.makedirs(folder_path, exist_ok=True)
+
+        # Calculate statistics
+        absolute_gradients = np.abs(self.gradient_array)
+        mean_error_per_pixel = np.mean(absolute_gradients, axis=0)
+        std_dev_per_pixel = np.std(absolute_gradients, axis=0)
+        mse_error_per_pixel = np.mean(absolute_gradients ** 2, axis=0)
+        overall_mse = np.mean(mse_error_per_pixel)
+        overall_rmse = np.sqrt(overall_mse)
+
+        # Generate and save heatmap of mean errors
+        self.global_min = np.min(mean_error_per_pixel)
+        self.global_max = np.max(mean_error_per_pixel)
+        heatmap = self.gradient_to_heatmap(mean_error_per_pixel)
+        heatmap_filename = os.path.join(folder_path, "mean_error_heatmap.png")
+        self.save_heatmap_with_colorbar(heatmap, heatmap_filename)
+
+        # Plot mean error with standard deviation contours
+        fig, ax = plt.subplots(figsize=(10, 8))
+        img = ax.imshow(mean_error_per_pixel, cmap='coolwarm', vmin=self.global_min, vmax=self.global_max)
+        ax.axis('off')
+
+        contour_levels = np.linspace(np.min(std_dev_per_pixel), np.max(std_dev_per_pixel), 10)
+        cs = ax.contour(std_dev_per_pixel, levels=contour_levels, colors='black', linewidths=0.5)
+        ax.clabel(cs, inline=1, fontsize=8, fmt='%1.2f')
+
+        divider = make_axes_locatable(ax)
+        cbar_ax = divider.append_axes("right", size="5%", pad=0.05)
+        cbar = plt.colorbar(img, cax=cbar_ax)
+        cbar.ax.tick_params(labelsize=8)
+        cbar.set_label('Gradient Intensity', size=8)
+
         overlay_filename = os.path.join(folder_path, "mean_error_with_std_contours.png")
         plt.savefig(overlay_filename, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
-        # Calculate and save the average error, standard deviation, MSE, and RMSE for the entire dataset
+        # Write overall statistics to file
         overall_mean_error = np.mean(mean_error_per_pixel)
         overall_std_dev = np.mean(std_dev_per_pixel)
-        with open(os.path.join(self.config.trial_path, "error_metrics.txt"), "w") as f:
+        with open(os.path.join(self.trial_path, "error_metrics.txt"), "w") as f:
             f.write(f"Average Error for the dataset: {overall_mean_error}\n")
             f.write(f"Overall Standard Deviation for the dataset: {overall_std_dev}\n")
             f.write(f"Overall MSE for the dataset: {overall_mse}\n")
             f.write(f"Overall RMSE for the dataset: {overall_rmse}\n")
+        
 
-    def plot_and_save_flow(self, flow_vis_list, img_list, x, y, output_dir='output_directory', plot_type='flow_vis', fps=2, mask=False):
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        ########### SSIM ###########
+    def normalize_image(self, image):
+        """Normalize image to range [0, 1]."""
+        return image.astype(np.float32) / image.max()
 
-        fig, ax = plt.subplots(1, 1, figsize=(18, 6))
-
-        def update_plot(i):
-            ax.cla()
+    def compute_average_metric_value(self, metric_values):
+        """
+        Compute the average value of a metric (e.g., SSIM, DSSIM, LPIPS).
+        
+        Args:
+            metric_values (list): List of metric values/maps for each frame.
             
-            flow_vis, u, v = flow_vis_list[i]
-            img = img_list[i]
+        Returns:
+            float: The average value of the metric.
+        """
+        # Handle both scalar values and spatial maps
+        if isinstance(metric_values[0], np.ndarray):  # Spatial maps (e.g., LPIPS in spatial mode)
+            avg_value = np.mean([np.mean(metric_map) for metric_map in metric_values])
+        else:  # Scalar values (e.g., SSIM, DSSIM)
+            avg_value = np.mean(metric_values)
+        
+        return avg_value
 
-            # Ensure x, y, u, and v have the same shape as img
-            if x.shape != img.shape:
-                x, y = np.meshgrid(np.arange(img.shape[1]), np.arange(img.shape[0]))
-
-
-            # Apply the mask to flow vectors
-            u_resized = cv2.resize(u, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
-            v_resized = cv2.resize(v, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
-            if mask==True:
-                mask = (img > 0).astype(np.uint8) * 255  # Convert mask to 8-bit image
-                u = u_resized[mask > 0]
-                v = v_resized[mask > 0]
-                x = x[mask > 0]
-                y = y[mask > 0]
-                flow_vis = cv2.bitwise_and(flow_vis.astype(np.uint8), flow_vis.astype(np.uint8), mask=mask)
-
-            if plot_type in ['flow_vis', 'both']:
-                # Plot color flow visualization
-                ax.imshow(flow_vis)
-                ax.axis('off')
-                plt.savefig(os.path.join(output_dir, f'flow_vis_{i:04d}.png'), bbox_inches='tight', pad_inches=0)
+    def compute_average_metric_map(self, metric_values):
+        """
+        Compute the average spatial map for a metric.
+        
+        Args:
+            metric_values (list): List of metric maps for each frame.
             
-            if plot_type in ['quiver', 'both']:
-                if plot_type == 'both':
-                    ax.cla()  # Clear the current plot for the next quiver plot
-                # Plot quiver plot
-                ax.quiver(x, y, u, v, angles='xy', scale_units='xy', scale=5, color='r')
-                ax.invert_yaxis()
-                ax.axis('off')
-                plt.savefig(os.path.join(output_dir, f'quiver_plot_{i:04d}.png'), bbox_inches='tight', pad_inches=0)
-            
-        for i in range(len(flow_vis_list)):
-            update_plot(i)
-            plt.cla()  # Clear the current plot for the next frame
+        Returns:
+            numpy array: The average spatial map.
+        """
+        # Sum all maps and divide by the number of frames to get the average map
+        avg_map = np.mean(metric_values, axis=0)
+        return avg_map
+    
+    def compute_metric(self, metric_func, metric_name):
+        """
+        Generalized function to compute a metric (SSIM, DSSIM, LPIPS, MS-SSIM) for all frames.
 
-        plt.close(fig)
+        Args:
+            metric_func (function): The metric computation function (e.g., SSIM, LPIPS).
+            metric_name (str): The name of the metric (used for logging).
+        """
+        print(f"Computing {metric_name}...")
 
-    @staticmethod
-    def save_binary_original_overlap(original_image, binary_image, path=None):
-        overlay_image = np.zeros_like(original_image)
-        mask = binary_image > 0
-        overlay_image[mask] = original_image[mask]
-        plt.imshow(overlay_image, cmap='gray')
-        plt.axis('off')
-        plt.savefig(path, bbox_inches='tight', pad_inches=0)
+        # Compute the metric for each frame
+        for i in tqdm(range(len(self.original_image_array)), desc=f"Computing {metric_name}", unit="frame"):
+            metric_func(i)
+
+    def compute_ssim_map(self, i):
+        ssim_value, ssim_map = ssim(
+            self.original_image_array[i], 
+            self.warped_image_array[i], 
+            full=True, 
+            data_range=self.warped_image_array[i].max() - self.warped_image_array[i].min()
+        )
+        self.ssim_maps.append(ssim_map)
+
+    def compute_dssim_map(self, i):
+        ssim_value, ssim_map = ssim(
+            self.original_image_array[i], 
+            self.warped_image_array[i], 
+            full=True, 
+            data_range=self.warped_image_array[i].max() - self.warped_image_array[i].min()
+        )
+        dssim_map = (1 - ssim_map) / 2
+        self.dssim_maps.append(dssim_map)
+
+    def compute_lpips(self, i):
+        """
+        Compute LPIPS for a single frame between the original and warped images in spatial mode.
+
+        Args:
+            i (int): Index of the current frame.
+        """
+        # Ensure LPIPS model is initialized only once and in spatial mode
+        if not hasattr(self, 'lpips_model'):
+            self.lpips_model = lpips.LPIPS(net='alex', spatial=True)  # Enable spatial mode here
+
+        # Handle grayscale (2D) or color (3D) images
+        if self.original_image_array[i].ndim == 2:
+            # Add batch and channel dimensions for grayscale images
+            original_tensor = torch.from_numpy(self.original_image_array[i]).unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, H, W]
+            warped_tensor = torch.from_numpy(self.warped_image_array[i]).unsqueeze(0).unsqueeze(0)
+        else:
+            # Permute dimensions for color images to match LPIPS input (NCHW format)
+            original_tensor = torch.from_numpy(self.original_image_array[i]).permute(2, 0, 1).unsqueeze(0)  # Shape: [1, 3, H, W]
+            warped_tensor = torch.from_numpy(self.warped_image_array[i]).permute(2, 0, 1).unsqueeze(0)
+
+        # Compute LPIPS in spatial mode
+        lpips_map = self.lpips_model(original_tensor, warped_tensor)
+
+        # Convert LPIPS map to a NumPy array after detaching from the computation graph
+        self.lpips_maps.append(lpips_map.detach().squeeze().cpu().numpy())  # Ensure detach before converting to NumPy
+
+    def compute_msssim_value(self, i):
+        msssim_metric = torchmetrics.functional.multiscale_structural_similarity_index_measure
+        original_tensor = torch.from_numpy(self.original_image_array[i]).unsqueeze(0).unsqueeze(0) if self.original_image_array[i].ndim == 2 else torch.from_numpy(self.original_image_array[i]).permute(2, 0, 1).unsqueeze(0)
+        warped_tensor = torch.from_numpy(self.warped_image_array[i]).unsqueeze(0).unsqueeze(0) if self.warped_image_array[i].ndim == 2 else torch.from_numpy(self.warped_image_array[i]).permute(2, 0, 1).unsqueeze(0)
+        msssim_value = msssim_metric(original_tensor, warped_tensor, data_range=original_tensor.max() - original_tensor.min())
+        self.msssim_values.append(msssim_value.item())
+
+    def metric_to_heatmap(self, metric_value, colormap, vmin=None, vmax=None):
+        """
+        Generalized function to convert a metric value/map to a heatmap, with optional min/max values.
+        
+        Args:
+            metric_value (float or numpy array): The metric value or map.
+            colormap (str): The colormap to use.
+            vmin (float, optional): Minimum value for color scale. Defaults to None.
+            vmax (float, optional): Maximum value for color scale. Defaults to None.
+
+        Returns:
+            numpy array: Heatmap of the metric values.
+        """
+        # Convert metric_value to heatmap form
+        heatmap = np.full((self.image_height, self.image_width), metric_value) if isinstance(metric_value, float) else metric_value
+        
+        # If vmin and vmax are None, compute them from the data
+        if vmin is None:
+            vmin = np.min(heatmap)
+        if vmax is None:
+            vmax = np.max(heatmap)
+
+        # Avoid division by zero if vmin and vmax are the same
+        if vmin == vmax:
+            # If the entire heatmap is a constant value, normalize to 0.5 so the heatmap shows a mid-range color
+            norm_heatmap = np.full_like(heatmap, 0.5)
+        else:
+            # Normalize the heatmap data to range [0, 1] using vmin and vmax
+            norm_heatmap = (heatmap - vmin) / (vmax - vmin)
+
+        # Apply colormap to normalized heatmap
+        cmap = cm.get_cmap(colormap)
+        colored_heatmap = cmap(norm_heatmap)
+
+        # Convert to uint8 format (0-255 scale)
+        heatmap_uint8 = (colored_heatmap * 255).astype(np.uint8)
+
+        return heatmap_uint8
+
+    def save_heatmap_with_colorbar(self, heatmap, filename, label, vmin=None, vmax=None):
+        """
+        Save heatmap with colorbar.
+
+        Args:
+            heatmap (numpy array): Heatmap to save.
+            filename (str): Path to save the heatmap.
+            label (str): Label for the colorbar.
+            vmin (float, optional): Minimum value for color scale. Defaults to None.
+            vmax (float, optional): Maximum value for color scale. Defaults to None.
+        """
+        # Create the figure and axis
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        # Plot the heatmap with specified min and max values
+        img = ax.imshow(heatmap, vmin=vmin, vmax=vmax, cmap='magma')  # You can replace 'magma' with the chosen colormap
+        ax.axis('off')  # Remove axis
+
+        # Add colorbar
+        divider = make_axes_locatable(ax)
+        cbar_ax = divider.append_axes("right", size="5%", pad=0.05)
+        cbar = plt.colorbar(img, cax=cbar_ax)
+        cbar.ax.tick_params(labelsize=8)
+        cbar.set_label(label, size=8)
+
+        # Save the heatmap to the given filename
+        plt.savefig(filename, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
-    @staticmethod
-    def save_synthetic_warp_pairs(img_list, warped_img_list, save_dir):
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
+    def generate_heatmaps(self, metric_name, metric_values, colormap, label):
+        """
+        Generalized function to generate heatmaps for a given metric, including average map and value.
 
-        for i in range(len(img_list)):
-            # Save the first image from img_list
-            img1 = FlowInitialization.convert_to_uint8(img_list[i])
-            img1_path = os.path.join(save_dir, f'image_{2 * i + 1:04d}.png')
-            Image.fromarray(img1).save(img1_path)
+        Args:
+            metric_name (str): Name of the metric (e.g., 'SSIM', 'DSSIM', 'LPIPS').
+            metric_values (list): List of metric values/maps for each frame.
+            colormap (str): Colormap to use for the heatmap.
+            label (str): Label for the colorbar.
+        """
+        folder_path = os.path.join(self.trial_path, f'{metric_name.lower()}_heatmaps')
+        os.makedirs(folder_path, exist_ok=True)
 
-            # Save the second image from warped_img_list if it exists
-            if i + 1 < len(warped_img_list):
-                img2 = FlowInitialization.convert_to_uint8(warped_img_list[i + 1])
-                img2_path = os.path.join(save_dir, f'image_{2 * i + 2:04d}.png')
-                Image.fromarray(img2).save(img2_path)
-    ##################################################
+        # Compute the min and max values across all frames (for dynamic color scaling)
+        all_values = np.concatenate([metric_map.flatten() if isinstance(metric_map, np.ndarray) else [metric_map] for metric_map in metric_values])
+        vmin, vmax = np.min(all_values), np.max(all_values)
 
+        # Compute and save the average value and map
+        avg_value = self.compute_average_metric_value(metric_values)
+        avg_map = self.compute_average_metric_map(metric_values)
+
+        print(f"Generating {metric_name} heatmaps for {self.image_save_range} frames...")
+
+        # Save the average map
+        avg_heatmap = self.metric_to_heatmap(avg_map, colormap, vmin=vmin, vmax=vmax)
+        avg_filename = os.path.join(folder_path, f"{metric_name.lower()}_average_map.png")
+        self.save_heatmap_with_colorbar(avg_heatmap, avg_filename, f"Average {label}", vmin=vmin, vmax=vmax)
+
+        # Save the average value in a text file
+        avg_value_filename = os.path.join(folder_path, f"{metric_name.lower()}_average_value.txt")
+        with open(avg_value_filename, 'w') as f:
+            f.write(f"Average {metric_name} value: {avg_value}\n")
+
+        # Generate heatmaps for the specified number of frames
+        save_range = min(self.image_save_range, len(metric_values))
+        for i in tqdm(range(save_range), desc=f"Generating {metric_name} Heatmaps", unit="frame"):
+            heatmap = self.metric_to_heatmap(metric_values[i], colormap, vmin=vmin, vmax=vmax)
+            filename = os.path.join(folder_path, f"{metric_name.lower()}_map_{i}.png")
+            self.save_heatmap_with_colorbar(heatmap, filename, label, vmin=vmin, vmax=vmax)
+########################################################################################
 class FlowAnalysis:
     def __init__(self, config, flow_vis_list, binary_mask_list, image_list, x, y):
         self.u_vectors, self.v_vectors, self.flow_vis_images = self.extract_flow_vectors(flow_vis_list)
@@ -1039,63 +1174,6 @@ class FlowAnalysis:
 
         plt.tight_layout()
         plt.show()
-
-####################################################################################
-def compare_binary_images_with_color_blending(binary_image_list, warped_img_list, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    iou_scores = []
-
-    for idx, binary_img in enumerate(binary_image_list):
-        if idx < len(warped_img_list):
-            warped_img = warped_img_list[idx]
-            _, binary_warped_img, _, _ = ed.lig_segment(warped_img, canny_threshold1=20, canny_threshold2=100, min_area=10, max_area=1000, k=3, plot_kmeans=None)
-
-            # Compute Intersection over Union (IoU)
-            intersection = np.logical_and(binary_img, binary_warped_img)
-            union = np.logical_or(binary_img, binary_warped_img)
-            iou_score = np.sum(intersection) / np.sum(union)
-            iou_scores.append(iou_score)
-
-            # Create color blended image
-            binary_img_color = cv2.merge([binary_img, np.zeros_like(binary_img), np.zeros_like(binary_img)])  # Red
-            binary_warped_img_color = cv2.merge([np.zeros_like(binary_warped_img), np.zeros_like(binary_warped_img), binary_warped_img])  # Blue
-
-            blended_image = cv2.addWeighted(binary_img_color, 0.5, binary_warped_img_color, 0.5, 0)
-
-            # Visualize the comparison
-            plt.figure(figsize=(12, 4))
-
-            plt.subplot(1, 3, 1)
-            plt.title('Original Binary Image')
-            plt.imshow(binary_img, cmap='gray')
-            plt.axis('off')
-
-            plt.subplot(1, 3, 2)
-            plt.title('Warped Binary Image')
-            plt.imshow(binary_warped_img, cmap='gray')
-            plt.axis('off')
-
-            plt.subplot(1, 3, 3)
-            plt.title('Blended Image')
-            plt.imshow(blended_image)
-            plt.axis('off')
-
-            plt.suptitle(f'Frame {idx+1} - IoU: {iou_score:.4f}')
-            plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, f'comparison_{idx+1}.png'))
-            plt.close()
-
-    return iou_scores
-
-# # Directory to save the comparison images
-# comparison_output_dir = "D:\\binary_image_comparisons_color"
-
-# # Compare binary images with color blending and get IoU scores
-# iou_scores = compare_binary_images_with_color_blending(binary_image_list, warped_img_list, comparison_output_dir)
-
-# # Print average IoU score
-# average_iou = np.mean(iou_scores)
-# print(f'Average IoU Score: {average_iou:.4f}')
 
 ##################################################
 # def extract_and_filter_contours(binary_image, min_contour_area=100):
